@@ -18,7 +18,7 @@ jobs:
         working-directory: ios
         run: xcodegen generate
 
-      - name: Build (unsigned — AltStore signs it on your phone)
+      - name: Build (Sideloadly or AltStore signs it with your Apple ID)
         shell: bash
         run: |
           set +e
