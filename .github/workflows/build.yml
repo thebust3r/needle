@@ -49,6 +49,19 @@ jobs:
           codesign --verify --verbose Payload/Needle.app
           zip -qry Needle.ipa Payload
 
+      - name: Inspect app package
+        shell: bash
+        run: |
+          {
+            echo "FILES:"; (cd Payload && find . -type f | sort | head -60)
+            echo "BINARIES:"; find Payload -type f -perm +111 -exec file {} \;
+            echo "SIGNATURE:"; codesign -dvvv Payload/Needle.app 2>&1 | head -25
+            echo "ENTITLEMENTS:"; codesign -d --entitlements - Payload/Needle.app 2>&1 | head -20
+            echo "PLIST:"; plutil -p Payload/Needle.app/Info.plist | head -60
+          } > inspect.txt
+          split -l 25 inspect.txt part_
+          for f in part_*; do msg=$(sed 's/%/%25/g' "$f" | awk '{printf "%s%%0A", $0}'); echo "::notice title=Inspect $f::$msg"; done
+
       - uses: actions/upload-artifact@v4
         with:
           name: Needle-ipa
