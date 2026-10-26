@@ -1,0 +1,11 @@
+services:
+  needle-web:
+    image: nginx:alpine
+    container_name: needle-web
+    restart: unless-stopped
+    ports:
+      - "8795:80"
+    volumes:
+      - ./site:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    mem_limit: 64m

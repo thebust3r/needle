@@ -7,6 +7,7 @@ downloads and lock-screen controls.
 ```
 needle/
   server/                 Navidrome (the music server) for the NAS
+  web/                    web version of the player (works in Safari)
   ios/                    the iPhone app
   .github/workflows/      builds the app automatically on GitHub
 ```
@@ -41,6 +42,27 @@ service type **HTTP** and URL `192.168.1.168:4533`.
 
 Random visitors now get blocked. The app sends the token with every request.
 For Navidrome's web page at home, use `http://192.168.1.168:4533` directly.
+
+## Web version (use this while sideloading is down)
+
+Same look, same equalizer, runs in Safari. Needs Navidrome from step 1.
+
+1. Copy the `web` folder to `/volume1/docker/needle-web` and create a new
+   **Project** from it in the UGREEN Docker app.
+2. At home, open `http://192.168.1.168:8795` on your iPhone, sign in with
+   your Navidrome account, then **Share › Add to Home Screen**.
+
+**Away from home:** add a second tunnel hostname, for example
+`player.yourdomain.com` → HTTP `192.168.1.168:8795`, and a Cloudflare Access
+app for it with an **Allow** policy that includes your email (login method:
+One-time PIN). Cloudflare emails you a code the first time, then remembers
+your phone. The iPhone app's service token can't be used by a browser,
+which is why this one signs in by email instead.
+
+Limits compared to the real app: with the EQ on, Safari may stop the music
+when you lock your phone (turn the EQ off for locked listening), and songs
+from your Files app have to be picked again each visit. Updating is just
+copying new files into `site`, then refreshing.
 
 ## 3. Build the app
 
