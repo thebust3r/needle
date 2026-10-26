@@ -19,10 +19,26 @@ jobs:
         run: xcodegen generate
 
       - name: Build (unsigned — AltStore signs it on your phone)
+        shell: bash
         run: |
+          set +e
           xcodebuild -project ios/Needle.xcodeproj -scheme Needle -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > build.log 2>&1
+          status=$?
+          if [ $status -ne 0 ]; then
+            # report compile errors as readable notes on the run
+            grep -E ": error:" build.log | sed "s#$GITHUB_WORKSPACE/##" | sort -u > errors.txt
+            [ -s errors.txt ] || tail -60 build.log > errors.txt
+            split -l 12 errors.txt part_
+            n=0
+            for f in part_*; do
+              n=$((n+1))
+              msg=$(sed 's/%/%25/g' "$f" | awk '{printf "%s%%0A", $0}')
+              echo "::error title=Build errors $n::$msg"
+            done
+          fi
+          exit $status
 
       - name: Package .ipa
         run: |
