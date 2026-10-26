@@ -889,10 +889,11 @@ const screens = {
       <div class="pill-row" style="margin-bottom:12px"><a class="pill" href="#/import">${icon("import")}Import from Spotify</a></div><div id="list">${loading()}</div>`;
     try {
       const list = await lib.playlists();
+      if (!$("#list")) return;   // left the screen while it loaded
       $("#list").innerHTML = list.map((p) => `<a class="row" href="#/playlist/${esc(p.id)}"><img class="art" loading="lazy" src="${cover(p.coverArt || p.id, 160)}" alt="">
         <div class="meta"><b>${esc(p.name)}</b><span>${p.songCount || 0} songs</span></div></a>`).join("")
         || `<div class="empty"><b>No playlists yet</b>Playlists you make in Navidrome show up here.</div>`;
-    } catch (e) { $("#list").innerHTML = errorBox(e); }
+    } catch (e) { if ($("#list")) $("#list").innerHTML = errorBox(e); }
   },
 
   async playlist(id) {
@@ -910,6 +911,7 @@ const screens = {
     view.innerHTML = `${backLink()}<h1 class="title">Favorites</h1><div id="fav">${loading()}</div>`;
     try {
       const r = await lib.starred();
+      if (!$("#fav")) return;
       screenTracks = (r.song || []).map(toTrack);
       const albums = r.album || [];
       $("#fav").innerHTML = (albums.length ? `<div class="section-head"><h2 class="h2">Albums</h2></div><div class="shelf">${albums.map(albumCard).join("")}</div>` : "")
