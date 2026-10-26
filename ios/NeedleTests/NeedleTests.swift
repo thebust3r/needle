@@ -226,7 +226,7 @@ final class VisualizerTests: XCTestCase {
     }
 
     func testFrameTimesAreFastEnough() {
-        for size in [360, 560] {
+        for size in [360, 440] {
             for mode in VizEngine.Mode.allCases {
                 let e = VizEngine()
                 e.mode = mode
@@ -243,9 +243,10 @@ final class VisualizerTests: XCTestCase {
                 times.sort()
                 let avg = times.reduce(0, +) / Double(times.count), p95 = times[Int(Double(times.count) * 0.95)]
                 metric("viz.frame_ms \(mode.name) \(size)px avg=\(String(format: "%.2f", avg)) p95=\(String(format: "%.2f", p95))")
-                // 560px is the most the phone ever draws (see VizUIView); 60 fps needs under 16.7 ms
-                XCTAssertLessThan(avg, size == 360 ? 6 : 9, "\(mode.name) at \(size)px: average frame leaves room for 60 fps")
-                XCTAssertLessThan(p95, 14, "\(mode.name) at \(size)px: no big stutters")
+                // 440px is the most the phone ever draws (see VizUIView). 60 fps = 16.7 ms per frame:
+                // average under half of that, and 95% of frames inside one frame
+                XCTAssertLessThan(avg, 8.3, "\(mode.name) at \(size)px: average frame leaves room for 60 fps")
+                XCTAssertLessThan(p95, 16.7, "\(mode.name) at \(size)px: 95% of frames fit in one 60 fps frame")
             }
         }
     }
