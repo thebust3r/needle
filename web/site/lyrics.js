@@ -130,7 +130,7 @@ const lyrics = (() => {
       document.body.classList.remove("viz-active");
     } else {
       cancelAnimationFrame(raf);
-      if (window.vizUI) vizUI.npOpened();
+      if (window.vizUI) vizUI.refresh();
     }
   }
 

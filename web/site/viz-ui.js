@@ -4,7 +4,7 @@ window.Viz = Viz;
 
 const vizUI = (() => {
   const stage = $("#np-stage"), small = $("#viz"), big = $("#viz-big"), full = $("#vizfull");
-  let on = store.get("vizOn", false);
+  let on = false;
   let hintTimer = 0, idleTimer = 0;
   let downX = 0, downY = 0, moved = false;
 
@@ -112,7 +112,8 @@ const vizUI = (() => {
 
   refreshLabels();
   return {
-    npOpened() { apply(); },
+    npOpened() { on = false; apply(); },   // Now Playing always opens on the album art
+    refresh() { apply(); },                // lyrics closed: show whatever was there before
     npClosed() { if (full.hidden) Viz.stop(); clearInterval(hintTimer); document.body.classList.remove("viz-active"); },
     toggle, openFull, closeFull,
     get on() { return on; },

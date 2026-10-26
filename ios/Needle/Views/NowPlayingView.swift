@@ -165,6 +165,7 @@ struct NowPlayingView: View {
                 if v.translation.width < -90 { player.next() } else if v.translation.width > 90 { player.previous() }
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { artDrag = 0 }
             })
+        .contentShape(Rectangle())   // the whole square takes taps, even while the art is hidden behind the visualizer
         .onTapGesture { withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { viz.on.toggle() } }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(viz.on ? "Visualizer. Double-tap to show the album art" : "Album art. Double-tap to show the visualizer")

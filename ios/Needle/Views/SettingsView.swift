@@ -101,7 +101,7 @@ struct SettingsView: View {
             } header: {
                 Text("Needle web address")
             } footer: {
-                Text("Used for importing Spotify playlists. Leave blank to use your server on port 8795.")
+                Text("Used for importing Spotify playlists. Leave blank: Needle uses your server address (or port 8795 at home).")
             }
 
             Section("Storage") {

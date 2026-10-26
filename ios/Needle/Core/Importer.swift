@@ -95,7 +95,10 @@ struct HelperClient {
         var s = address.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.isEmpty {
             guard let server = config.baseURL, let host = server.host else { return nil }
-            return URL(string: "http://\(host):8795")
+            // Navidrome straight on its own port (at home): the web player is next door on 8795.
+            // Anything else (a Cloudflare tunnel to the web player) already serves the helper too.
+            if server.port == 4533 { return URL(string: "http://\(host):8795") }
+            return server
         }
         if !s.lowercased().hasPrefix("http") { s = "http://" + s }
         while s.hasSuffix("/") { s.removeLast() }

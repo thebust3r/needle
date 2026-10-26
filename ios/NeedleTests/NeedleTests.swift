@@ -355,6 +355,8 @@ final class ImporterTests: XCTestCase {
         XCTAssertEqual(HelperClient.baseURL(address: "", config: c)?.absoluteString, "http://192.168.1.168:8795")
         XCTAssertEqual(HelperClient.baseURL(address: "192.168.1.168:8795/", config: c)?.absoluteString, "http://192.168.1.168:8795")
         XCTAssertEqual(HelperClient.baseURL(address: "https://music.example.com", config: c)?.absoluteString, "https://music.example.com")
+        var tunnel = c; tunnel.url = "https://some-random-words.trycloudflare.com/"
+        XCTAssertEqual(HelperClient.baseURL(address: "", config: tunnel)?.absoluteString, "https://some-random-words.trycloudflare.com")
         let url = HelperClient(config: c, address: "").url("jobs/abc")!.absoluteString
         XCTAssertTrue(url.hasPrefix("http://192.168.1.168:8795/helper/jobs/abc?u=mason&t="), url)
         XCTAssertTrue(url.contains("&s="))

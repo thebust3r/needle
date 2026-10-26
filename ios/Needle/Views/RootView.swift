@@ -44,7 +44,7 @@ struct RootView: View {
 
             VStack(spacing: 8) {
                 if player.current != nil {
-                    MiniPlayer(open: { showNowPlaying = true })
+                    MiniPlayer(open: { VizSettings.shared.on = false; showNowPlaying = true })
                         .padding(.horizontal, 10)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }

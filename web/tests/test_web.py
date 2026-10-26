@@ -27,6 +27,7 @@ async def new_page(browser, reduced=False, w=390, h=844, viz=False, lyr=False):
         f"localStorage.setItem('needle.vizOn', '{str(viz).lower()}'); localStorage.setItem('needle.lyricsOn', '{str(lyr).lower()}');"
         "localStorage.setItem('needle.vizAuto', 'false'); localStorage.setItem('needle.vizMode', '0'); }")
     pg = await ctx.new_page()
+    pg.want_viz = viz
     errs = []
     pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.on("console", lambda m: errs.append(m.text) if m.type == "error" else None)
@@ -44,6 +45,9 @@ async def play(pg, album="al1", idx=0, open_np=True):
     if open_np:
         await pg.click("#mini")
         await pg.wait_for_timeout(500)
+        if getattr(pg, "want_viz", False) and not await pg.evaluate("vizUI.on"):
+            await pg.click("#np-stage")          # Now Playing opens on the art; tap it for the visualizer
+            await pg.wait_for_timeout(300)
 
 
 WINDOW = """(() => { const s = Viz.stats, d = [...s.drawMs].sort((a, b) => a - b), iv = s.intervals;
@@ -105,11 +109,15 @@ async def main():
         await pg.wait_for_timeout(500)
         check("tapping again flips back to the art and stops drawing", not await pg.evaluate("vizUI.on") and not await pg.evaluate("Viz.running"))
         await pg.click("#np-stage")
-        await pg.reload()
-        await pg.wait_for_timeout(800)
-        check("visualizer choice is remembered after reloading", await pg.evaluate("localStorage.getItem('needle.vizOn') === 'true'"))
-        await play(pg)
-        check("reopening Now Playing resumes the visualizer", await pg.evaluate("vizUI.on && Viz.running"))
+        await pg.wait_for_timeout(300)
+        await pg.click("#np-close")
+        await pg.wait_for_timeout(450)
+        await pg.click("#mini")
+        await pg.wait_for_timeout(500)
+        check("reopening Now Playing shows the album art again", not await pg.evaluate("vizUI.on") and not await pg.evaluate("Viz.running"))
+        await pg.click("#np-stage")
+        await pg.wait_for_timeout(400)
+        check("one tap brings the visualizer back", await pg.evaluate("vizUI.on && Viz.running"))
         labels = []
         for _ in range(6):
             await pg.click("#viz-mode")

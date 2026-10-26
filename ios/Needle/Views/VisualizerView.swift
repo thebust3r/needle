@@ -10,7 +10,8 @@ final class VizSettings {
 
     @ObservationIgnored let engine = VizEngine()
 
-    var on: Bool { didSet { UserDefaults.standard.set(on, forKey: "viz.on") } }
+    /// Now Playing always opens on the album art; tap it to flip to the visualizer.
+    var on = false
     var mode: VizEngine.Mode {
         didSet {
             engine.mode = mode
@@ -28,7 +29,6 @@ final class VizSettings {
 
     init() {
         let d = UserDefaults.standard
-        on = d.bool(forKey: "viz.on")
         mode = VizEngine.Mode(rawValue: d.integer(forKey: "viz.mode")) ?? .tunnel
         auto = d.object(forKey: "viz.auto") as? Bool ?? true
         engine.mode = mode
