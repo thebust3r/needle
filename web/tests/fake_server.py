@@ -49,7 +49,29 @@ def tone_wav(seed):
     w.writeframes(bytes(frames)); w.close(); return buf.getvalue()
 
 WAVS = {}
+HELPER = os.environ.get("HELPER_URL")          # forward /helper/ to a running helper (import tests)
+REST_FWD = os.environ.get("REST_FORWARD")       # playlists live in the helper's fake Navidrome
+from urllib.request import Request as _Req, urlopen as _open
+from urllib.error import HTTPError as _HE
+
 class H(SimpleHTTPRequestHandler):
+    def forward(self, base, method):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n) if n else None
+        req = _Req(base + self.path, data=body, method=method, headers={"Content-Type": self.headers.get("Content-Type", "application/json")})
+        try:
+            with _open(req, timeout=30) as r: code, data, ct = r.status, r.read(), r.headers.get("Content-Type", "")
+        except _HE as e: code, data, ct = e.code, e.read(), e.headers.get("Content-Type", "")
+        except Exception: code, data, ct = 502, b"<html>Bad Gateway</html>", "text/html"
+        self.send_response(code); self.send_header("Content-Type", ct); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+    def do_POST(self):
+        if self.path.startswith("/helper/"):
+            if not HELPER: return self.forward("http://127.0.0.1:1", "POST")
+            return self.forward(HELPER, "POST")
+        self.send_error(404)
+    def do_DELETE(self):
+        if self.path.startswith("/helper/") and HELPER: return self.forward(HELPER, "DELETE")
+        self.send_error(404)
     def __init__(self, *a, **k): super().__init__(*a, directory=SITE, **k)
     def log_message(self, *a): pass
     def ok(self, payload):
@@ -57,6 +79,10 @@ class H(SimpleHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
         u = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if u.path.startswith("/helper/"):
+            return self.forward(HELPER or "http://127.0.0.1:1", "GET")
+        if REST_FWD and u.path in ("/rest/getPlaylist", "/rest/getPlaylists"):
+            return self.forward(REST_FWD, "GET")
         if u.path.startswith("/lrclib/api/"):
             title = q.get("track_name", "")
             if "Drive" in title or "Echo" in title:
@@ -108,4 +134,4 @@ class H(SimpleHTTPRequestHandler):
             except BrokenPipeError: pass
             return
         self.send_error(404)
-ThreadingHTTPServer(("127.0.0.1", 8796), H).serve_forever()
+ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("PORT", 8796))), H).serve_forever()

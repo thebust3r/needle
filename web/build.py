@@ -15,6 +15,10 @@ def block(text, indent):
 nginx = open(os.path.join(HERE, "nginx.conf")).read()
 updater = open(os.path.join(HERE, "updater.sh")).read()
 version = open(os.path.join(HERE, "site", "version.txt")).read().strip()
+# keys stay out of the repo: set them in the environment to build a ready-to-paste copy
+SLSKD_KEY = os.environ.get("SLSKD_KEY", "PASTE_SLSKD_API_KEY")
+LIDARR_KEY = os.environ.get("LIDARR_KEY", "PASTE_LIDARR_API_KEY")
+OUT = os.environ.get("COMPOSE_OUT", os.path.join(HERE, "docker-compose.yml"))
 
 compose = f"""# Needle web player. Paste this as a new Project in the UGREEN Docker app.
 # Folder: {FOLDER}   (it only needs to exist; everything inside is created for you)
@@ -55,16 +59,43 @@ services:
         EOF
         exec sh /updater.sh
     mem_limit: 32m
+
+  # Spotify playlist import + downloads. Fill in the two API keys.
+  needle-helper:
+    image: python:3.12-alpine
+    container_name: needle-helper
+    restart: unless-stopped
+    environment:
+      NAVIDROME_URL: http://192.168.1.168:4533
+      SLSKD_URL: http://192.168.1.168:5030
+      SLSKD_API_KEY: "{SLSKD_KEY}"        # the key you added in slskd's options
+      LIDARR_URL: http://192.168.1.168:8686
+      LIDARR_API_KEY: "{LIDARR_KEY}"      # Lidarr > Settings > General > API Key
+      TZ: America/Chicago
+    volumes:
+      - {FOLDER}:/app
+      - /home/masonbiggs/Music:/music
+      - /volume1/docker/soulseek/downloads:/downloads
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          if [ -f /app/site/helper/helper.py ]; then python -u /app/site/helper/helper.py; else sleep 7; fi
+          sleep 3
+        done
+    mem_limit: 128m
 """
-open(os.path.join(HERE, "docker-compose.yml"), "w").write(compose)
+open(OUT, "w").write(compose)
 
 dist = os.path.join(HERE, "dist")
 os.makedirs(dist, exist_ok=True)
 zpath = os.path.join(dist, f"Needle-web-v{version}.zip")
 with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
     for root, _, files in os.walk(os.path.join(HERE, "site")):
+        if "__pycache__" in root: continue
         for f in files:
             full = os.path.join(root, f)
             z.write(full, os.path.relpath(full, HERE))
-    z.write(os.path.join(HERE, "docker-compose.yml"), "docker-compose.yml")
+    z.write(OUT, "docker-compose.yml")
 print("wrote docker-compose.yml and", zpath)

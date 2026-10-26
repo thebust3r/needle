@@ -51,12 +51,17 @@ final class AppSettings {
     var cacheLimitGB: Double {
         didSet { UserDefaults.standard.set(cacheLimitGB, forKey: "cacheLimitGB") }
     }
+    /// Where the Needle web player runs (for playlist import). Blank = the server's host on port 8795.
+    var helperAddress: String {
+        didSet { UserDefaults.standard.set(helperAddress, forKey: "helperAddress") }
+    }
 
     init() {
         config = Keychain.load(ServerConfig.self, key: "server-config") ?? ServerConfig()
         quality = StreamQuality(rawValue: UserDefaults.standard.string(forKey: "quality") ?? "") ?? .original
         let limit = UserDefaults.standard.double(forKey: "cacheLimitGB")
         cacheLimitGB = limit > 0 ? limit : 2
+        helperAddress = UserDefaults.standard.string(forKey: "helperAddress") ?? ""
     }
 }
 

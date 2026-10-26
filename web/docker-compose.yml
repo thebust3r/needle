@@ -39,6 +39,17 @@ services:
                 proxy_read_timeout 20s;
             }
 
+            # playlist import helper (needle-helper container in the same project)
+            location /helper/ {
+                resolver 127.0.0.11 valid=10s ipv6=off;
+                set $$helper http://needle-helper:8790;
+                proxy_pass $$helper;
+                proxy_read_timeout 60s;
+                client_max_body_size 4m;
+                add_header Cache-Control "no-store";
+            }
+            location ~ \.py$$ { return 404; }
+
             location = /version.txt { add_header Cache-Control "no-store"; }
 
             location / {
@@ -137,3 +148,29 @@ services:
         EOF
         exec sh /updater.sh
     mem_limit: 32m
+
+  # Spotify playlist import + downloads. Fill in the two API keys.
+  needle-helper:
+    image: python:3.12-alpine
+    container_name: needle-helper
+    restart: unless-stopped
+    environment:
+      NAVIDROME_URL: http://192.168.1.168:4533
+      SLSKD_URL: http://192.168.1.168:5030
+      SLSKD_API_KEY: "PASTE_SLSKD_API_KEY"        # the key you added in slskd's options
+      LIDARR_URL: http://192.168.1.168:8686
+      LIDARR_API_KEY: "PASTE_LIDARR_API_KEY"      # Lidarr > Settings > General > API Key
+      TZ: America/Chicago
+    volumes:
+      - /volume1/docker/needle-web:/app
+      - /home/masonbiggs/Music:/music
+      - /volume1/docker/soulseek/downloads:/downloads
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          if [ -f /app/site/helper/helper.py ]; then python -u /app/site/helper/helper.py; else sleep 7; fi
+          sleep 3
+        done
+    mem_limit: 128m

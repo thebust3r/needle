@@ -35,6 +35,7 @@ final class AppModel {
     let lyrics = LyricsStore()
 
     var client: SubsonicClient { SubsonicClient(config: settings.config) }
+    var helper: HelperClient { HelperClient(config: settings.config, address: settings.helperAddress) }
 
     init() {
         let settings = self.settings, downloads = self.downloads, local = self.local

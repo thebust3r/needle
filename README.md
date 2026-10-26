@@ -81,6 +81,26 @@ from your Files app have to be picked again each visit.
 **Tests:** `web/tests` has the fake server plus the full test and benchmark
 suite (`test_web.py`) and the updater tests (`test_updater.py`).
 
+## Import Spotify playlists
+
+Library › **Import a Spotify Playlist** (web and app). Paste a playlist or album
+link, or a list of songs (`Artist - Song`, one per line, or an Exportify CSV).
+Needle builds a playlist in Navidrome, in the same order, from the songs you
+already have. Missing songs can be fetched with **Just the Songs** (Soulseek via
+slskd, saved to `Music/Needle Downloads/<Artist>`) or **Whole Albums** (Lidarr),
+and they're slotted into the playlist when they arrive.
+
+It runs as the `needle-helper` container in the web project (same compose file).
+Fill in `SLSKD_API_KEY` and `LIDARR_API_KEY` there. The helper updates with the
+same zip as the web player.
+
+Limits: Spotify only shares the first 100 songs of a playlist this way (paste the
+list for longer ones), playlists must be public, and Soulseek blocks searches
+for some artist names.
+
+**Tests:** `web/tests/test_helper.py` (helper against fake Spotify, Navidrome,
+slskd, Lidarr and MusicBrainz) and `web/tests/test_import_web.py` (the screen).
+
 ## 3. Build the app
 
 GitHub builds it for you (no Mac needed):

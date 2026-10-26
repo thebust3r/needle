@@ -284,3 +284,108 @@ final class VisualizerTests: XCTestCase {
         return kr == KERN_SUCCESS ? Double(info.resident_size) / 1_048_576 : 0
     }
 }
+
+// MARK: - Playlist import
+
+/// Answers requests from canned data, so the helper client can be tested without a NAS.
+final class StubProtocol: URLProtocol {
+    nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, String, Data))?
+    nonisolated(unsafe) static var lastRequest: URLRequest?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lastRequest = request
+        let (code, type, data) = Self.handler?(request) ?? (500, "text/plain", Data())
+        let resp = HTTPURLResponse(url: request.url!, statusCode: code, httpVersion: nil, headerFields: ["Content-Type": type])!
+        client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+final class ImporterTests: XCTestCase {
+    // Shaped exactly like the helper's /helper/jobs/<id> answer.
+    let jobJSON = """
+    {"id":"a1b2c3","created":1790000000.5,"updated":1790000001,"state":"ready","name":"Road Trip Mix","source":"https://open.spotify.com/playlist/x",
+     "progress":{"done":4,"total":4},"playlistId":"pl1","found":2,"active":true,
+     "counts":{"found":2,"downloading":1,"failed":1},
+     "tracks":[
+      {"title":"Stressed Out","artists":["Twenty One Pilots"],"duration":202,"uri":"spotify:track:1","i":0,"status":"found","songId":"s1","match":"x"},
+      {"title":"Midnight City","artists":["M83"],"duration":244,"i":1,"status":"downloading","method":"song","progress":40,"note":"Downloading from goodguy"},
+      {"title":"Obscure Song","artists":["Nobody Known"],"duration":180,"i":2,"status":"failed","note":"No one on Soulseek is sharing it right now"},
+      {"title":"Weird Fishes","artists":["Radiohead"],"duration":318,"i":3,"status":"found","songId":"s9","note":"Downloaded"}]}
+    """
+
+    func testDecodesHelperJob() throws {
+        let j = try JSONDecoder().decode(ImportJob.self, from: Data(jobJSON.utf8))
+        XCTAssertEqual(j.name, "Road Trip Mix")
+        XCTAssertEqual(j.tracks?.count, 4)
+        XCTAssertEqual(j.missing.map(\.title), ["Obscure Song"])
+        XCTAssertEqual(j.summary, "2 of 4 in your library · 1 on the way · 1 not found")
+        XCTAssertEqual(j.fraction, 0.5, accuracy: 0.001)
+        XCTAssertEqual(j.tracks?[1].label, "Downloading 40%")
+        XCTAssertEqual(j.tracks?[3].label, "Added")
+        XCTAssertEqual(j.tracks?[0].label, "")
+        XCTAssertEqual(j.tracks?[2].label, "Not found")
+        XCTAssertTrue(j.tracks![1].isActive)
+    }
+
+    func testSummaryWhileWorking() throws {
+        let j = try JSONDecoder().decode(ImportJob.self, from: Data("""
+        {"id":"x","name":"","state":"matching","found":0,"active":false,"progress":{"done":3,"total":12},"tracks":[]}
+        """.utf8))
+        XCTAssertEqual(j.summary, "Checking your library… 3 of 12")
+        XCTAssertEqual(j.fraction, 0.25, accuracy: 0.001)
+        XCTAssertTrue(j.isWorking)
+    }
+
+    func testRecentListEntryWithoutTracks() throws {
+        // /helper/jobs leaves out the song list
+        let j = try JSONDecoder().decode(ImportJob.self, from: Data("""
+        {"id":"x","name":"Mix","state":"ready","found":8,"active":false,"counts":{"found":8,"missing":4},"progress":{"done":12,"total":12}}
+        """.utf8))
+        XCTAssertEqual(j.summary, "8 of 12 in your library")
+    }
+
+    func testHelperAddress() {
+        var c = ServerConfig(); c.url = "http://192.168.1.168:4533"; c.username = "mason"; c.password = "pw"
+        XCTAssertEqual(HelperClient.baseURL(address: "", config: c)?.absoluteString, "http://192.168.1.168:8795")
+        XCTAssertEqual(HelperClient.baseURL(address: "192.168.1.168:8795/", config: c)?.absoluteString, "http://192.168.1.168:8795")
+        XCTAssertEqual(HelperClient.baseURL(address: "https://music.example.com", config: c)?.absoluteString, "https://music.example.com")
+        let url = HelperClient(config: c, address: "").url("jobs/abc")!.absoluteString
+        XCTAssertTrue(url.hasPrefix("http://192.168.1.168:8795/helper/jobs/abc?u=mason&t="), url)
+        XCTAssertTrue(url.contains("&s="))
+    }
+
+    private func client() -> HelperClient {
+        var c = ServerConfig(); c.url = "http://nas.local:4533"; c.username = "mason"; c.password = "pw"
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [StubProtocol.self]
+        return HelperClient(config: c, address: "", session: URLSession(configuration: cfg))
+    }
+
+    func testStartImportSendsJSON() async throws {
+        StubProtocol.handler = { _ in (200, "application/json", Data(self.jobJSON.utf8)) }
+        let j = try await client().start(source: "https://open.spotify.com/playlist/x", name: "")
+        XCTAssertEqual(j.id, "a1b2c3")
+        let req = StubProtocol.lastRequest!
+        XCTAssertEqual(req.httpMethod, "POST")
+        XCTAssertEqual(req.url?.path, "/helper/import")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Content-Type"), "application/json")
+    }
+
+    func testHelperMissingGivesClearMessage() async {
+        StubProtocol.handler = { _ in (502, "text/html", Data("<html>Bad Gateway</html>".utf8)) }
+        do { _ = try await client().jobs(); XCTFail("should throw") } catch {
+            XCTAssertTrue(error.localizedDescription.contains("isn't running"), error.localizedDescription)
+        }
+    }
+
+    func testHelperErrorMessagePassedThrough() async {
+        StubProtocol.handler = { _ in (400, "application/json", Data(#"{"error":"Soulseek isn't set up in the helper."}"#.utf8)) }
+        do { _ = try await client().download("a1", method: "song", indexes: [1]); XCTFail("should throw") } catch {
+            XCTAssertEqual(error.localizedDescription, "Soulseek isn't set up in the helper.")
+        }
+    }
+}

@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 struct ArtistRoute: Hashable { let id: String; let name: String }
 struct PlaylistRoute: Hashable { let playlist: Playlist }
 struct LocalAlbumRoute: Hashable { let name: String; let artist: String }
-enum ListRoute: Hashable { case albums, artists, playlists, favorites, downloads, onPhone }
+enum ListRoute: Hashable { case albums, artists, playlists, favorites, downloads, onPhone, importer }
 
 extension View {
     func withDestinations() -> some View {
@@ -15,6 +15,7 @@ extension View {
             .navigationDestination(for: ArtistRoute.self) { ArtistView(route: $0) }
             .navigationDestination(for: PlaylistRoute.self) { PlaylistView(playlist: $0.playlist) }
             .navigationDestination(for: LocalAlbumRoute.self) { LocalAlbumView(route: $0) }
+            .navigationDestination(for: ImportRoute.self) { ImportJobView(id: $0.id) }
             .navigationDestination(for: ListRoute.self) { route in
                 switch route {
                 case .albums: AlbumsGridView()
@@ -23,6 +24,7 @@ extension View {
                 case .favorites: FavoritesView()
                 case .downloads: DownloadsView()
                 case .onPhone: OnPhoneView()
+                case .importer: ImportView()
                 }
             }
     }
@@ -46,6 +48,9 @@ struct LibraryView: View {
                     row("Favorites", "heart", .favorites)
                 }
                 row("Downloaded", "arrow.down.circle", .downloads, count: downloads.saved.count)
+                if settings.config.isComplete {
+                    row("Import a Spotify Playlist", "square.and.arrow.down.on.square", .importer)
+                }
                 row("On This iPhone", "iphone", .onPhone, count: local.tracks.count)
             }
             .padding(.bottom, 24)
@@ -182,6 +187,9 @@ struct PlaylistsListView: View {
         .scrollContentBackground(.hidden)
         .background(Theme.background)
         .navigationTitle("Playlists")
+        .toolbar {
+            NavigationLink(value: ListRoute.importer) { Label("Import from Spotify", systemImage: "square.and.arrow.down") }
+        }
         .overlay {
             if loader.value?.isEmpty == true {
                 StatusView(icon: "music.note.list", title: "No playlists yet", message: "Playlists you make in Navidrome show up here.")

@@ -800,7 +800,7 @@ const screens = {
 
   async library() {
     view.innerHTML = `<h1 class="title">Library</h1>
-      ${[["albums", "album", "Albums"], ["artists", "mic", "Artists"], ["playlists", "playlist", "Playlists"], ["favorites", "heart", "Favorites"], ["files", "folder", "Play Files from This Phone"]]
+      ${[["albums", "album", "Albums"], ["artists", "mic", "Artists"], ["playlists", "playlist", "Playlists"], ["favorites", "heart", "Favorites"], ["files", "folder", "Play Files from This Phone"], ["import", "import", "Import a Spotify Playlist"]]
         .map(([r, ic, label]) => `<a class="nav-row" href="#/${r}">${icon(ic)}${label}<span class="count">${icon("chev")}</span></a>`).join("")}`;
   },
 
@@ -885,7 +885,8 @@ const screens = {
   },
 
   async playlists() {
-    view.innerHTML = `${backLink()}<h1 class="title">Playlists</h1><div id="list">${loading()}</div>`;
+    view.innerHTML = `${backLink()}<h1 class="title">Playlists</h1>
+      <div class="pill-row" style="margin-bottom:12px"><a class="pill" href="#/import">${icon("import")}Import from Spotify</a></div><div id="list">${loading()}</div>`;
     try {
       const list = await lib.playlists();
       $("#list").innerHTML = list.map((p) => `<a class="row" href="#/playlist/${esc(p.id)}"><img class="art" loading="lazy" src="${cover(p.coverArt || p.id, 160)}" alt="">
@@ -1028,11 +1029,12 @@ const localTracks = [];
 function route() {
   routeToken++;
   screenTracks = [];
+  if (window.importer) importer.stopPolling();
   if (!cfg.user || !cfg.pass) return screens.welcome();
   $("#dock").hidden = false;
   const [name, arg] = location.hash.replace(/^#\/?/, "").split("/");
   const screen = screens[name || "home"] && name !== "welcome" ? name || "home" : "home";
-  const tab = { albums: "library", artists: "library", playlists: "library", favorites: "library", files: "library", album: "library", artist: "library", playlist: "library" }[screen] || screen;
+  const tab = { albums: "library", artists: "library", playlists: "library", favorites: "library", files: "library", album: "library", artist: "library", playlist: "library", import: "library" }[screen] || screen;
   $$("#tabs a").forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
   window.scrollTo(0, 0);
   screens[screen](arg && decodeURIComponent(arg));
@@ -1121,4 +1123,4 @@ setInterval(checkForUpdate, 120000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) checkForUpdate(); });
 
 window.addEventListener("hashchange", route);
-route();
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", route); else route();   // after the add-on scripts load

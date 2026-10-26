@@ -28,7 +28,7 @@ struct SubsonicClient {
 
     // MARK: building requests
 
-    private func authItems() -> [URLQueryItem] {
+    func authItems() -> [URLQueryItem] {
         let salt = String(UUID().uuidString.prefix(8)).lowercased()
         let digest = Insecure.MD5.hash(data: Data((config.password + salt).utf8))
         let token = digest.map { String(format: "%02x", $0) }.joined()

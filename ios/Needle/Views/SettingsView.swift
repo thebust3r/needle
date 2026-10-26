@@ -94,6 +94,16 @@ struct SettingsView: View {
                 Text("Original plays your files exactly as they are. Lower quality uses less data on cellular. Downloads always save the original.")
             }
 
+            Section {
+                TextField(HelperClient.baseURL(address: "", config: settings.config)?.absoluteString ?? "http://192.168.1.168:8795",
+                          text: $settings.helperAddress)
+                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+            } header: {
+                Text("Needle web address")
+            } footer: {
+                Text("Used for importing Spotify playlists. Leave blank to use your server on port 8795.")
+            }
+
             Section("Storage") {
                 LabeledContent("Downloaded", value: "\(downloads.saved.count) songs · \(ByteCountFormatter.string(fromByteCount: downloads.totalBytes, countStyle: .file))")
                 LabeledContent("On this iPhone", value: "\(local.tracks.count) songs")
