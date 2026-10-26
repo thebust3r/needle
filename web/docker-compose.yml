@@ -1,3 +1,7 @@
+# Needle web player. Paste this as a new Project in the UGREEN Docker app.
+# Folder: /volume1/docker/needle-web   (it only needs to exist; everything inside is created for you)
+# First install: drop the Needle web zip into /volume1/docker/needle-web/updates
+# Updates later: same thing, drop the new zip into updates. No redeploy.
 services:
   needle-web:
     image: nginx:alpine
@@ -6,6 +10,130 @@ services:
     ports:
       - "8795:80"
     volumes:
-      - ./site:/usr/share/nginx/html:ro
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - /volume1/docker/needle-web:/app:ro
+    command:
+      - sh
+      - -c
+      - |
+        sed -i 's/^user .*/user root;/' /etc/nginx/nginx.conf
+        cat > /etc/nginx/conf.d/default.conf <<'EOF'
+        server {
+            listen 80;
+            root /app/site;
+
+            # music, art and library requests go straight to Navidrome on the NAS
+            location /rest/ {
+                proxy_pass http://192.168.1.168:4533;
+                proxy_http_version 1.1;
+                proxy_buffering off;
+                proxy_read_timeout 600s;
+            }
+
+            # synced lyrics from LRCLIB, fetched by the NAS (works even if the phone can't reach it)
+            location ~ ^/lrclib/(.*)$$ {
+                resolver 1.1.1.1 8.8.8.8 valid=300s ipv6=off;
+                proxy_pass https://lrclib.net/$$1$$is_args$$args;
+                proxy_ssl_server_name on;
+                proxy_set_header Host lrclib.net;
+                proxy_set_header User-Agent "Needle web player (personal, self-hosted)";
+                proxy_read_timeout 20s;
+            }
+
+            location = /version.txt { add_header Cache-Control "no-store"; }
+
+            location / {
+                try_files $$uri $$uri/ /index.html;
+                add_header Cache-Control "no-cache";
+            }
+        }
+        EOF
+        exec nginx -g 'daemon off;'
     mem_limit: 64m
+
+  needle-updater:
+    image: alpine:3.20
+    container_name: needle-updater
+    restart: unless-stopped
+    volumes:
+      - /volume1/docker/needle-web:/app
+    command:
+      - sh
+      - -c
+      - |
+        cat > /updater.sh <<'EOF'
+        #!/bin/sh
+        # Needle web updater: drop an update zip into the "updates" folder and it's installed within seconds.
+        #   updates/installed   zips that were installed
+        #   updates/failed      zips that couldn't be installed (the current version keeps running)
+        #   updates/backups     the previous versions (last 5 kept)
+        # Your settings live in your browser, so updating never logs you out.
+        set -u
+        APP="$${APP:-/app}"
+        UPD="$$APP/updates"
+        SITE="$$APP/site"
+        mkdir -p "$$UPD/installed" "$$UPD/failed" "$$UPD/backups" "$$SITE"
+
+        log() { echo "$$(date '+%Y-%m-%d %H:%M:%S') $$*"; }
+
+        fail() {   # zip, reason
+          mv "$$1" "$$UPD/failed/$$(basename "$$1")" 2>/dev/null
+          log "FAILED $$(basename "$$1"): $$2. Moved it to updates/failed. Nothing was changed."
+        }
+
+        install_zip() {
+          z="$$1"
+          name=$$(basename "$$z")
+          tmp=$$(mktemp -d)
+          if ! unzip -q -o "$$z" -d "$$tmp" >/dev/null 2>&1; then
+            rm -rf "$$tmp"; fail "$$z" "it isn't a working zip file"; return
+          fi
+          # the web app is the shallowest folder holding both index.html and app.js
+          # (works for site/, web/site/, a whole GitHub download, or loose files)
+          src=$$(find "$$tmp" -type f -name index.html | awk '{ n = gsub("/", "/"); print n "\t" $$0 }' | sort -n | cut -f 2- |
+                while IFS= read -r f; do d=$$(dirname "$$f"); if [ -f "$$d/app.js" ]; then echo "$$d"; break; fi; done)
+          if [ -z "$$src" ]; then
+            if [ -n "$$(find "$$tmp" -type f -name index.html | head -n 1)" ]; then reason="app.js is missing next to index.html"
+            else reason="there's no index.html inside, so it isn't a Needle update"; fi
+            rm -rf "$$tmp"; fail "$$z" "$$reason"; return
+          fi
+
+          stamp=$$(date +%Y%m%d-%H%M%S)
+          if [ -f "$$SITE/index.html" ]; then
+            mkdir -p "$$UPD/backups/$$stamp"
+            cp -a "$$SITE/." "$$UPD/backups/$$stamp/"
+          fi
+          rm -rf "$$APP/.site-new" "$$APP/.site-old"
+          mkdir -p "$$APP/.site-new"
+          cp -a "$$src/." "$$APP/.site-new/"
+          chmod -R a+rX "$$APP/.site-new"
+          # swap the new version in all at once
+          if mv "$$SITE" "$$APP/.site-old" && mv "$$APP/.site-new" "$$SITE"; then
+            rm -rf "$$APP/.site-old"
+          else
+            [ -d "$$APP/.site-old" ] && [ ! -d "$$SITE" ] && mv "$$APP/.site-old" "$$SITE"
+            rm -rf "$$tmp"; fail "$$z" "couldn't replace the old files"; return
+          fi
+          rm -rf "$$tmp"
+          mv "$$z" "$$UPD/installed/$$stamp-$$name"
+          ver=$$(cat "$$SITE/version.txt" 2>/dev/null || echo "unknown")
+          log "Installed $$name (version $$ver). Refresh the page to see it."
+          # keep the 5 newest backups
+          ls -1d "$$UPD/backups"/*/ 2>/dev/null | sort | awk '{ a[NR] = $$0 } END { for (i = 1; i <= NR - 5; i++) print a[i] }' | while read -r old; do rm -rf "$$old"; done
+        }
+
+        log "Needle updater watching $$UPD"
+        [ -f "$$SITE/index.html" ] || log "No web app installed yet: drop the Needle web zip into the updates folder."
+        while :; do
+          for z in "$$UPD"/*.zip "$$UPD"/*.ZIP; do
+            [ -f "$$z" ] || continue
+            # wait until the file has finished copying (size stops changing)
+            s1=$$(wc -c < "$$z"); sleep 2; s2=$$(wc -c < "$$z" 2>/dev/null || echo 0)
+            [ "$$s1" = "$$s2" ] && [ "$$s1" -gt 0 ] || continue
+            install_zip "$$z"
+          done
+          [ "$${ONCE:-}" = "1" ] && break
+          sleep 5
+        done
+        EOF
+        exec sh /updater.sh
+    mem_limit: 32m

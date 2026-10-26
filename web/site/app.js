@@ -105,7 +105,7 @@ const saveEQ = () => store.set("eq", eq);
 const allPresets = () => PRESETS.concat(eq.custom);
 
 const audio = {
-  ctx: null, filters: [], pre: null, analyser: null, freqData: null,
+  ctx: null, filters: [], pre: null, analyser: null, vizAnalyser: null, freqData: null,
   ensure() {
     if (this.ctx) { if (this.ctx.state === "suspended") this.ctx.resume(); return; }
     const C = window.AudioContext || window.webkitAudioContext;
@@ -124,8 +124,12 @@ const audio = {
     this.analyser.fftSize = 4096;
     this.analyser.smoothingTimeConstant = 0.72;
     this.freqData = new Float32Array(this.analyser.frequencyBinCount);
+    this.vizAnalyser = this.ctx.createAnalyser();     // snappier one for the visualizer's beat detection
+    this.vizAnalyser.fftSize = 2048;
+    this.vizAnalyser.smoothingTimeConstant = 0.35;
     this.filters[9].connect(this.pre);
-    this.pre.connect(this.analyser);
+    this.pre.connect(this.vizAnalyser);
+    this.vizAnalyser.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
     this.apply();
   },
@@ -426,12 +430,14 @@ const ui = {
     $("#np-title").textContent = t.title;
     $("#np-artist").textContent = t.artist;
     $("#np-album").textContent = t.album;
+    if (window.lyrics) lyrics.trackChanged(t);
     palette(t.coverArt).then((p) => {
       if (player.current !== t) return;
       const r = document.documentElement.style;
       r.setProperty("--np-top", p.top);
       r.setProperty("--np-bottom", p.bottom);
       r.setProperty("--np-accent", p.accent);
+      if (window.Viz) Viz.setColor(p.accent);
     });
     this.update();
     $$(".row[data-id]").forEach((r) => r.classList.toggle("current", r.dataset.id === t.id));
@@ -478,9 +484,13 @@ function openNP() {
   requestAnimationFrame(() => requestAnimationFrame(() => np.classList.remove("closing")));
   ui.update();
   glowLoop();
+  if (window.vizUI) vizUI.npOpened();
+  if (window.lyrics) lyrics.npOpened();
 }
 function closeNP() {
   const np = $("#np");
+  if (window.vizUI) vizUI.npClosed();
+  if (window.lyrics) lyrics.npClosed();
   np.classList.add("closing");
   setTimeout(() => { np.hidden = true; np.classList.remove("closing"); np.style.transform = ""; }, 330);
 }
@@ -489,6 +499,7 @@ function glowLoop() {
   const c = $("#np canvas.glow");
   const draw = () => {
     if ($("#np").hidden) return;
+    if (document.body.classList.contains("viz-active")) { requestAnimationFrame(draw); return; }   // visualizer is on instead
     const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
     if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
     const g = c.getContext("2d");
@@ -973,7 +984,8 @@ const screens = {
       <div class="form" style="margin-top:26px">
         <label style="display:flex;align-items:center;justify-content:space-between" id="s-eq"><span style="font-size:17px;color:#fff">Equalizer</span><span>${eq.enabled ? esc(eq.preset) : "Off"} ›</span></label>
       </div>
-      <p class="note">Add Needle to your Home Screen (Share › Add to Home Screen) so it opens full screen like an app.</p>`;
+      <p class="note">Add Needle to your Home Screen (Share › Add to Home Screen) so it opens full screen like an app.</p>
+      <p class="note">Needle web ${esc(loadedVersion || "")}. To update, drop a new zip into the updates folder on your NAS.</p>`;
     $("#s-quality").value = quality;
     $("#s-quality").onchange = (e) => { quality = e.target.value; store.set("quality", quality); };
     $("#s-eq").onclick = openEQ;
@@ -1044,7 +1056,6 @@ $("#np-heart").onclick = () => player.star(!player.current?.starred);
 $("#np-eq").onclick = openEQ;
 $("#np-queue").onclick = () => { $("#queue").hidden = false; renderQueue(); };
 $("#np-more").onclick = () => player.current && showMenu(player.current.title, [player.current]);
-$(".np-art").onclick = () => player.toggle();
 
 const seek = $("#np-seek");
 seek.oninput = () => {
@@ -1062,7 +1073,7 @@ seek.onchange = () => { player.seek((seek.value / 1000) * player.duration()); sc
   let sx = 0, sy = 0, dragging = false, onArt = false;
   np.addEventListener("touchstart", (e) => {
     if (e.target.closest("input, .controls, .np-bottom")) return;
-    sx = e.touches[0].clientX; sy = e.touches[0].clientY; dragging = true; onArt = !!e.target.closest(".np-art");
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; dragging = true; onArt = !!e.target.closest(".np-stage") && !e.target.closest(".viz-ui");
   }, { passive: true });
   np.addEventListener("touchmove", (e) => {
     if (!dragging) return;
@@ -1085,6 +1096,29 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "Space") { e.preventDefault(); player.toggle(); }
   if (e.key === "Escape") { if (!$("#eq").hidden) $("#eq").hidden = true; else if (!$("#queue").hidden) $("#queue").hidden = true; else if (!$("#np").hidden) closeNP(); }
 });
+
+/* ============================================================
+   Updates: notice when a new version was dropped into the updates folder
+   ============================================================ */
+let loadedVersion = null;
+async function checkForUpdate() {
+  try {
+    const r = await fetch("version.txt", { cache: "no-store" });
+    if (!r.ok) return;
+    const v = (await r.text()).trim();
+    if (!loadedVersion) { loadedVersion = v; return; }
+    if (v === loadedVersion) return;
+    if (!player.current) { location.reload(); return; }    // nothing loaded: just switch
+    const t = $("#toast");
+    t.textContent = `Needle ${v} is installed. Tap here to refresh.`;
+    t.hidden = false;
+    clearTimeout(toast.timer);
+    t.onclick = () => location.reload();
+  } catch { /* offline, try later */ }
+}
+checkForUpdate();
+setInterval(checkForUpdate, 120000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkForUpdate(); });
 
 window.addEventListener("hashchange", route);
 route();

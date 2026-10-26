@@ -45,24 +45,41 @@ For Navidrome's web page at home, use `http://192.168.1.168:4533` directly.
 
 ## Web version (use this while sideloading is down)
 
-Same look, same equalizer, runs in Safari. Needs Navidrome from step 1.
+Same look, same equalizer, plus the visualizer and synced lyrics. Runs in
+Safari. Needs Navidrome from step 1.
 
-1. Copy the `web` folder to `/volume1/docker/needle-web` and create a new
-   **Project** from it in the UGREEN Docker app.
-2. At home, open `http://192.168.1.168:8795` on your iPhone, sign in with
-   your Navidrome account, then **Share › Add to Home Screen**.
+**Install (one time):**
 
-**Away from home:** add a second tunnel hostname, for example
-`player.yourdomain.com` → HTTP `192.168.1.168:8795`, and a Cloudflare Access
-app for it with an **Allow** policy that includes your email (login method:
-One-time PIN). Cloudflare emails you a code the first time, then remembers
-your phone. The iPhone app's service token can't be used by a browser,
-which is why this one signs in by email instead.
+1. In the UGREEN Docker app, create a new **Project** for the folder
+   `/volume1/docker/needle-web` and paste in `web/docker-compose.yml`.
+   It starts two containers: `needle-web` (the player) and `needle-updater`.
+2. Drop the `Needle-web-vX.zip` file into `/volume1/docker/needle-web/updates`
+   (the folder appears once the project is running). It installs itself within
+   seconds.
+3. On your iPhone at home, open `http://192.168.1.168:8795`, sign in with your
+   Navidrome account, then **Share › Add to Home Screen**.
+
+**Updating:** drop the new zip into the `updates` folder. That's it.
+Installed zips move to `updates/installed`, the previous version is kept in
+`updates/backups` (last 5), and a bad zip goes to `updates/failed` without
+touching the running version. If music is playing, the app shows a "tap to
+refresh" note instead of interrupting the song.
+
+**In the player:**
+
+- **Visualizer:** tap the album art on Now Playing. Tap the style button to
+  switch between Warp Ring, Prism, Hyperspace, Melt and Auto; tap the corner
+  button for full screen (swipe sideways there to change style). It reacts to
+  the music when the EQ is on.
+- **Lyrics:** tap the speech-bubble button. Uses lyrics in your music files
+  (or `.lrc` files beside them) first, then LRCLIB. Tap a line to jump there.
 
 Limits compared to the real app: with the EQ on, Safari may stop the music
 when you lock your phone (turn the EQ off for locked listening), and songs
-from your Files app have to be picked again each visit. Updating is just
-copying new files into `site`, then refreshing.
+from your Files app have to be picked again each visit.
+
+**Tests:** `web/tests` has the fake server plus the full test and benchmark
+suite (`test_web.py`) and the updater tests (`test_updater.py`).
 
 ## 3. Build the app
 

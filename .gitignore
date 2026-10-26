@@ -3,3 +3,5 @@ build/
 ios/Needle/Info.plist
 server/data/
 .DS_Store
+web/dist/
+__pycache__/

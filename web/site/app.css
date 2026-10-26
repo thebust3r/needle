@@ -194,12 +194,16 @@ svg.i { width: 1em; height: 1em; fill: currentColor; flex: none; }
 .np-top small { display: block; font-size: 11px; opacity: .6; }
 .np-top b { display: block; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60vw; }
 .np-art-wrap { flex: 1; display: grid; place-items: center; min-height: 0; padding: 12px 0; }
+.np-stage { position: relative; width: min(100%, 42vh); aspect-ratio: 1; cursor: pointer; outline: none; }
+.np-stage .np-art { width: 100%; }
 .np-art {
   width: min(100%, 42vh); aspect-ratio: 1; border-radius: 16px; object-fit: cover; background: #222;
   box-shadow: 0 20px 50px rgba(0, 0, 0, .55);
   transition: transform .55s cubic-bezier(.3, 1.4, .5, 1), box-shadow .55s;
 }
-#np.paused .np-art { transform: scale(.86); box-shadow: 0 10px 24px rgba(0, 0, 0, .3); }
+#np.paused .np-stage { position: relative; width: min(100%, 42vh); aspect-ratio: 1; cursor: pointer; outline: none; }
+.np-stage .np-art { width: 100%; }
+.np-art { transform: scale(.86); box-shadow: 0 10px 24px rgba(0, 0, 0, .3); }
 .np-title { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .np-title > div { flex: 1; min-width: 0; }
 .np-title h2 { margin: 0; font: 800 22px/1.2 var(--wide); font-stretch: expanded; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -218,7 +222,9 @@ svg.i { width: 1em; height: 1em; fill: currentColor; flex: none; }
 .np-bottom { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; }
 .np-bottom .chip { background: rgba(255, 255, 255, .16); }
 .np-bottom .chip.off { background: rgba(255, 255, 255, .08); }
-.np-bottom > button:last-child { font-size: 22px; width: 44px; height: 44px; display: grid; place-items: center; }
+.np-right { display: flex; gap: 4px; }
+.np-right button { font-size: 22px; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; opacity: .85; }
+.np-right button.on { background: rgba(255, 255, 255, .18); opacity: 1; }
 
 /* range sliders */
 input[type=range] { -webkit-appearance: none; appearance: none; background: transparent; height: 22px; margin: 0; }
@@ -286,3 +292,63 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; bord
 @media (min-width: 700px) {
   #mini { max-width: 680px; margin: 0 auto 8px; }
 }
+
+/* ---------- visualizer ---------- */
+.np-viz {
+  position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 16px; background: #000;
+  opacity: 0; transform: scale(.94) rotateY(70deg); pointer-events: none;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .55);
+  transition: opacity .35s ease, transform .45s cubic-bezier(.3, 1.3, .5, 1);
+}
+.np-stage .np-art { transition: opacity .3s ease, transform .55s cubic-bezier(.3, 1.4, .5, 1), box-shadow .55s; }
+.np-stage.viz-on .np-art { opacity: 0; transform: scale(.94) rotateY(-70deg); }
+.np-stage.viz-on .np-viz { opacity: 1; transform: none; }
+#np.paused .np-stage.viz-on .np-viz { transform: scale(.94); }
+.viz-ui { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; justify-content: space-between; align-items: center;
+  opacity: 0; pointer-events: none; transition: opacity .3s; }
+.np-stage.viz-on .viz-ui { opacity: 1; pointer-events: auto; }
+.viz-chip {
+  padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff;
+  background: rgba(0, 0, 0, .45); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+.viz-btn { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-size: 16px; color: #fff;
+  background: rgba(0, 0, 0, .45); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.viz-hint { position: absolute; left: 12px; right: 12px; top: 12px; margin: 0; text-align: center; font-size: 12px; color: rgba(255, 255, 255, .8);
+  background: rgba(0, 0, 0, .45); border-radius: 10px; padding: 6px 8px; }
+#vizfull { position: fixed; inset: 0; z-index: 55; background: #000; animation: fadein .25s ease; }
+#vizfull canvas { width: 100%; height: 100%; display: block; }
+.vf-top { position: absolute; top: calc(var(--safe-t) + 10px); left: 14px; right: 14px; display: flex; justify-content: space-between; transition: opacity .4s; }
+.vf-bottom { position: absolute; left: 20px; right: 20px; bottom: calc(var(--safe-b) + 18px); transition: opacity .4s; text-shadow: 0 1px 8px #000; }
+.vf-bottom b { display: block; font: 800 20px/1.2 var(--wide); font-stretch: expanded; }
+.vf-bottom span { opacity: .75; }
+#vizfull.idle .vf-top, #vizfull.idle .vf-bottom { opacity: 0; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .np-viz, .np-stage .np-art { transition: opacity .2s; transform: none !important; } #vizfull { animation: none; } }
+
+/* ---------- lyrics ---------- */
+.lyrics { position: relative; width: 100%; height: 100%; min-height: 0; align-self: stretch; }
+.lyrics-body {
+  position: absolute; inset: 0; overflow-y: auto; padding: 18% 2px 45%; scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(transparent, #000 12%, #000 80%, transparent);
+  mask-image: linear-gradient(transparent, #000 12%, #000 80%, transparent);
+}
+.lyrics-body::-webkit-scrollbar { display: none; }
+.ly-line {
+  margin: 0 0 18px; font: 800 26px/1.22 var(--wide); font-stretch: expanded; letter-spacing: -.01em;
+  color: rgba(255, 255, 255, .34); cursor: pointer; transition: color .35s ease, transform .35s ease; transform-origin: left center;
+}
+.ly-line.past { color: rgba(255, 255, 255, .5); }
+.ly-line.now { color: #fff; transform: scale(1.03); }
+.ly-line.gap { font-size: 20px; }
+.ly-line.static { color: rgba(255, 255, 255, .85); font-size: 21px; cursor: default; }
+.ly-note { margin: 30% 8px 0; text-align: center; color: rgba(255, 255, 255, .65); font-size: 16px; }
+.ly-source { margin: 28px 0 0; font-size: 12px; color: rgba(255, 255, 255, .45); }
+@media (prefers-reduced-motion: reduce) { .ly-line { transition: none; } .ly-line.now { transform: none; } }
+
+/* while the visualizer is showing, the background effects step aside (they'd be redundant and cost battery) */
+body.viz-active #np canvas.glow { display: none; }
+body.viz-active #np .backdrop img { animation-play-state: paused; }
+body.viz-full #np { visibility: hidden; }
+.viz-flash { position: absolute; inset: 0; border-radius: inherit; opacity: 0; pointer-events: none; mix-blend-mode: screen; }
+.np-stage .viz-flash { border-radius: 16px; display: none; }
+.np-stage.viz-on .viz-flash { display: block; }
