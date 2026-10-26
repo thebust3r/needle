@@ -92,17 +92,7 @@ struct NowPlayingView: View {
         ZStack {
             palette.bottom
             if let backdrop {
-                TimelineView(.animation(minimumInterval: 1 / 15, paused: !player.isPlaying || vizShowing)) { ctx in
-                    let t = ctx.date.timeIntervalSinceReferenceDate
-                    Image(uiImage: backdrop)
-                        .resizable()
-                        .scaledToFill()
-                        .scaleEffect(1.9 + 0.08 * sin(t / 7))
-                        .rotationEffect(.degrees(sin(t / 11) * 6))
-                        .offset(x: cos(t / 9) * 30, y: sin(t / 13) * 40)
-                        .blur(radius: 70)
-                        .opacity(0.85)
-                }
+                NowPlayingBackdrop(image: backdrop, paused: !player.isPlaying || vizShowing)
             }
             LinearGradient(colors: [palette.top.opacity(0.35), .clear, palette.bottom.opacity(0.85), .black.opacity(0.8)],
                            startPoint: .top, endPoint: .bottom)
@@ -337,4 +327,30 @@ struct AirPlayButton: UIViewRepresentable {
         return v
     }
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
+/// The blurred, drifting cover behind Now Playing. It's drawn as an overlay on an empty view, so the
+/// image (which fills a tall screen by growing much wider than it) can never change the page's size.
+struct NowPlayingBackdrop: View {
+    let image: UIImage
+    var paused = false
+
+    var body: some View {
+        Color.clear
+            .overlay {
+                TimelineView(.animation(minimumInterval: 1 / 15, paused: paused)) { ctx in
+                    let t = ctx.date.timeIntervalSinceReferenceDate
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .scaleEffect(1.9 + 0.08 * sin(t / 7))
+                        .rotationEffect(.degrees(sin(t / 11) * 6))
+                        .offset(x: cos(t / 9) * 30, y: sin(t / 13) * 40)
+                        .blur(radius: 70)
+                        .opacity(0.85)
+                }
+            }
+            .clipped()
+            .allowsHitTesting(false)
+    }
 }

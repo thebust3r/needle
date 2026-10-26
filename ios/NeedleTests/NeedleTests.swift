@@ -1,4 +1,6 @@
 import CoreGraphics
+import SwiftUI
+import UIKit
 import XCTest
 @testable import Needle
 
@@ -387,5 +389,38 @@ final class ImporterTests: XCTestCase {
         do { _ = try await client().download("a1", method: "song", indexes: [1]); XCTFail("should throw") } catch {
             XCTAssertEqual(error.localizedDescription, "Soulseek isn't set up in the helper.")
         }
+    }
+}
+
+// MARK: - Layout
+
+@MainActor
+final class LayoutTests: XCTestCase {
+    /// The blurred cover behind Now Playing must never make the page wider than the screen
+    /// (a square cover filling a tall screen is much wider than the screen).
+    func testBackdropKeepsScreenSize() {
+        let square = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 160)).image { ctx in
+            UIColor.red.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 160, height: 160))
+        }
+        let screen = CGSize(width: 393, height: 852)
+        let host = UIHostingController(rootView: NowPlayingBackdrop(image: square))
+        let fit = host.sizeThatFits(in: screen)
+        metric("layout.backdrop size=\(Int(fit.width))x\(Int(fit.height)) screen=\(Int(screen.width))x\(Int(screen.height))")
+        XCTAssertLessThanOrEqual(fit.width, screen.width)
+        XCTAssertLessThanOrEqual(fit.height, screen.height)
+
+        // and inside a page laid out like Now Playing, the text column stays on screen
+        let page = ZStack {
+            NowPlayingBackdrop(image: square)
+            VStack { Text("Da Begining").frame(maxWidth: .infinity, alignment: .leading) }.padding(.horizontal, 28)
+        }
+        let pageFit = UIHostingController(rootView: page).sizeThatFits(in: screen)
+        XCTAssertLessThanOrEqual(pageFit.width, screen.width)
+
+        // the old way (image straight in the stack) really did blow the page up: proves this test catches it
+        let old = ZStack { Image(uiImage: square).resizable().scaledToFill(); Text("x") }
+        let oldFit = UIHostingController(rootView: old).sizeThatFits(in: screen)
+        metric("layout.old_backdrop width=\(Int(oldFit.width)) (screen \(Int(screen.width)))")
+        XCTAssertGreaterThan(oldFit.width, screen.width)
     }
 }
