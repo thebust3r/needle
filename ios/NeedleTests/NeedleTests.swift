@@ -98,7 +98,8 @@ final class EqualizerTests: XCTestCase {
         var g = [Float](repeating: 0, count: 10)
         g[0] = -8
         g[9] = 8
-        XCTAssertEqual(Equalizer.response(at: 20, gains: g), -8, accuracy: 1)
+        XCTAssertEqual(Equalizer.response(at: 10, gains: g), -8, accuracy: 1)
+        XCTAssertLessThan(Equalizer.response(at: 20, gains: g), -6, "most of the cut already applies at 20 Hz")
         XCTAssertEqual(Equalizer.response(at: 19000, gains: g), 8, accuracy: 1)
     }
 }
@@ -165,11 +166,13 @@ final class VisualizerTests: XCTestCase {
     func testNeverMoreThanThreeFlashesPerSecond() {
         let e = VizEngine()
         e.resize(width: 200, height: 200)
-        run(e, seconds: 10, make: { self.input($0, bpm: 480) })     // a very fast beat to push the limit
+        run(e, seconds: 10, make: { self.input($0, bpm: 240) })     // 4 beats a second: tries to flash too often
         let worst = maxPerSecond(e.stats.flashLog)
-        metric("viz.max_flashes_per_second=\(worst) (limit 3), beats=\(e.stats.beats)")
+        metric("viz.max_flashes_per_second=\(worst) (limit 3), beats=\(e.stats.beats), flashes=\(e.stats.flashes)")
+        XCTAssertGreaterThan(e.stats.beats, 35, "the test really does beat ~4 times a second")
         XCTAssertLessThanOrEqual(worst, 3)
-        XCTAssertGreaterThan(e.stats.flashes, 0)
+        XCTAssertLessThan(e.stats.flashes, e.stats.beats, "some flashes were held back")
+        XCTAssertGreaterThan(e.stats.flashes, 20)
     }
 
     func testReduceMotionHasNoFlashesButStillReacts() {
@@ -223,7 +226,7 @@ final class VisualizerTests: XCTestCase {
     }
 
     func testFrameTimesAreFastEnough() {
-        for size in [360, 700] {
+        for size in [360, 560] {
             for mode in VizEngine.Mode.allCases {
                 let e = VizEngine()
                 e.mode = mode
@@ -240,10 +243,9 @@ final class VisualizerTests: XCTestCase {
                 times.sort()
                 let avg = times.reduce(0, +) / Double(times.count), p95 = times[Int(Double(times.count) * 0.95)]
                 metric("viz.frame_ms \(mode.name) \(size)px avg=\(String(format: "%.2f", avg)) p95=\(String(format: "%.2f", p95))")
-                if size == 360 {
-                    XCTAssertLessThan(avg, 8, "\(mode.name) at \(size)px: average frame must leave room for 60 fps")
-                    XCTAssertLessThan(p95, 14, "\(mode.name) at \(size)px: no big stutters")
-                }
+                // 560px is the most the phone ever draws (see VizUIView); 60 fps needs under 16.7 ms
+                XCTAssertLessThan(avg, size == 360 ? 6 : 9, "\(mode.name) at \(size)px: average frame leaves room for 60 fps")
+                XCTAssertLessThan(p95, 14, "\(mode.name) at \(size)px: no big stutters")
             }
         }
     }

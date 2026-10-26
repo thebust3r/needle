@@ -117,9 +117,11 @@ final class VizUIView: UIView {
         guard bounds.width > 1 else { return }
         let engine = VizSettings.shared.engine
         engine.reducedMotion = UIAccessibility.isReduceMotionEnabled
-        let scale = min(window?.screen.scale ?? 2, 2) * quality
-        let w = Int(min(bounds.width * scale, 900))
-        let h = Int(min(bounds.height * scale, 900 * bounds.height / bounds.width))
+        // draw at most 560px on the long side (the glow scales up cleanly), lower if the phone is struggling
+        let scale = min(window?.screen.scale ?? 2, 2)
+        let longSide = max(bounds.width, bounds.height) * scale
+        let fit = min(1, 560 / longSide) * quality
+        let w = Int(bounds.width * scale * fit), h = Int(bounds.height * scale * fit)
         engine.resize(width: w, height: h)
 
         let now = l.timestamp
