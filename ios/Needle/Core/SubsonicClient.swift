@@ -136,6 +136,11 @@ struct SubsonicClient {
         _ = try await call(on ? "star" : "unstar", ["id": id])
     }
 
+    /// Lyrics stored in your music files or .lrc files beside them (Navidrome 0.53+).
+    func lyrics(songId: String) async throws -> [SubsonicResponse.StructuredLyrics] {
+        try await call("getLyricsBySongId", ["id": songId]).lyricsList?.structuredLyrics ?? []
+    }
+
     /// Tells the server a song was played, so "most played" lists stay accurate.
     func scrobble(_ id: String) async {
         _ = try? await call("scrobble", ["id": id, "submission": "true"])

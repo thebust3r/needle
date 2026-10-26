@@ -6,15 +6,17 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.1"
+    CURRENT_PROJECT_VERSION: "2"
 targets:
   Needle:
     type: application
     platform: iOS
     sources:
       - Needle
-    scheme: {}
+    scheme:
+      testTargets:
+        - NeedleTests
     info:
       path: Needle/Info.plist
       properties:
@@ -40,3 +42,18 @@ targets:
         CODE_SIGNING_ALLOWED: "NO"
         CODE_SIGNING_REQUIRED: "NO"
         ENABLE_PREVIEWS: "NO"
+
+  NeedleTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - NeedleTests
+    dependencies:
+      - target: Needle
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: com.thebust3r.needle.tests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Needle.app/Needle
+        BUNDLE_LOADER: $(TEST_HOST)
+        CODE_SIGNING_ALLOWED: "NO"

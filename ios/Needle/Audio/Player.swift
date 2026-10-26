@@ -42,7 +42,7 @@ final class Player {
     init() {
         av.actionAtItemEnd = .advance
         av.automaticallyWaitsToMinimizeStalling = true
-        timeObserver = av.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] t in
+        timeObserver = av.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { [weak self] t in
             MainActor.assumeIsolated { self?.tick(t.seconds) }
         }
         kvo.append(av.observe(\.currentItem, options: [.new]) { [weak self] _, _ in

@@ -14,6 +14,10 @@ struct NowPlayingView: View {
     @State private var scrubbing: Double?
     @State private var artDrag: CGFloat = 0
     @State private var sheetDrag: CGFloat = 0
+    @State private var viz = VizSettings.shared
+    @State private var showVizFull = false
+    @AppStorage("lyrics.on") private var lyricsOn = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         GeometryReader { geo in
@@ -23,7 +27,15 @@ struct NowPlayingView: View {
                 VStack(spacing: 0) {
                     topBar
                     Spacer(minLength: 12)
-                    artwork(artSize)
+                    if lyricsOn {
+                        LyricsView()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: artSize + 24)
+                            .padding(.horizontal, 28)
+                            .transition(.opacity)
+                    } else {
+                        artwork(artSize)
+                    }
                     Spacer(minLength: 20)
                     VStack(spacing: 22) {
                         titleRow
@@ -52,6 +64,7 @@ struct NowPlayingView: View {
                 .presentationDetents([.large])
                 .presentationBackground(.ultraThinMaterial)
         }
+        .fullScreenCover(isPresented: $showVizFull) { VizFullScreen() }
         .sheet(isPresented: $showQueue) {
             QueueView()
                 .presentationDetents([.medium, .large])
@@ -66,6 +79,7 @@ struct NowPlayingView: View {
                 palette = pp
                 backdrop = ii
             }
+            VizSettings.shared.engine.setColor(UIColor(pp.accent))
         }
         .onAppear { EQProcessor.shared.spectrumEnabled = true }
         .onDisappear { if !showEQ { EQProcessor.shared.spectrumEnabled = false } }
@@ -78,7 +92,7 @@ struct NowPlayingView: View {
         ZStack {
             palette.bottom
             if let backdrop {
-                TimelineView(.animation(minimumInterval: 1 / 15, paused: !player.isPlaying)) { ctx in
+                TimelineView(.animation(minimumInterval: 1 / 15, paused: !player.isPlaying || vizShowing)) { ctx in
                     let t = ctx.date.timeIntervalSinceReferenceDate
                     Image(uiImage: backdrop)
                         .resizable()
@@ -95,7 +109,7 @@ struct NowPlayingView: View {
             SpectrumGlow(color: palette.accent)
                 .frame(height: 220)
                 .frame(maxHeight: .infinity, alignment: .bottom)
-                .opacity(player.isPlaying ? 0.55 : 0)
+                .opacity(player.isPlaying && !vizShowing && !lyricsOn ? 0.55 : 0)
                 .animation(.easeInOut(duration: 0.6), value: player.isPlaying)
         }
         .ignoresSafeArea()
@@ -121,20 +135,49 @@ struct NowPlayingView: View {
         .padding(.horizontal, 12)
     }
 
+    private var vizShowing: Bool { viz.on && !lyricsOn }
+
+    /// Album art. Tap it to flip to the visualizer and back; swipe sideways to skip.
     private func artwork(_ size: CGFloat) -> some View {
-        ArtworkView(track: player.current, size: size, corner: 16)
-            .shadow(color: .black.opacity(player.isPlaying ? 0.55 : 0.3), radius: player.isPlaying ? 36 : 18, y: player.isPlaying ? 20 : 10)
-            .scaleEffect(player.isPlaying ? 1 : 0.86)
-            .animation(.spring(response: 0.5, dampingFraction: 0.72), value: player.isPlaying)
-            .offset(x: artDrag)
-            .rotationEffect(.degrees(Double(artDrag) / 40))
-            .gesture(DragGesture(minimumDistance: 12)
-                .onChanged { v in if abs(v.translation.width) > abs(v.translation.height) { artDrag = v.translation.width } }
-                .onEnded { v in
-                    if v.translation.width < -90 { player.next() } else if v.translation.width > 90 { player.previous() }
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { artDrag = 0 }
-                })
-            .onTapGesture { player.togglePlay() }
+        ZStack {
+            ArtworkView(track: player.current, size: size, corner: 16)
+                .opacity(viz.on ? 0 : 1)
+                .rotation3DEffect(.degrees(viz.on ? -70 : 0), axis: (x: 0, y: 1, z: 0))
+            if viz.on {
+                VisualizerView(active: vizShowing && !showVizFull && scenePhase == .active)
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(alignment: .bottom) {
+                        HStack {
+                            Button { viz.cycle() } label: { VizChip(text: viz.label) }
+                            Spacer()
+                            Button { showVizFull = true } label: {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    .font(.footnote.weight(.semibold)).frame(width: 34, height: 34)
+                                    .background(.black.opacity(0.45), in: Circle())
+                            }
+                            .accessibilityLabel("Full-screen visualizer")
+                        }
+                        .padding(10)
+                    }
+                    .transition(.asymmetric(insertion: .scale(scale: 0.94).combined(with: .opacity), removal: .opacity))
+            }
+        }
+        .frame(width: size, height: size)
+        .shadow(color: .black.opacity(player.isPlaying ? 0.55 : 0.3), radius: player.isPlaying ? 36 : 18, y: player.isPlaying ? 20 : 10)
+        .scaleEffect(player.isPlaying ? 1 : 0.86)
+        .animation(.spring(response: 0.5, dampingFraction: 0.72), value: player.isPlaying)
+        .offset(x: artDrag)
+        .rotationEffect(.degrees(Double(artDrag) / 40))
+        .gesture(DragGesture(minimumDistance: 12)
+            .onChanged { v in if abs(v.translation.width) > abs(v.translation.height) { artDrag = v.translation.width } }
+            .onEnded { v in
+                if v.translation.width < -90 { player.next() } else if v.translation.width > 90 { player.previous() }
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { artDrag = 0 }
+            })
+        .onTapGesture { withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { viz.on.toggle() } }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(viz.on ? "Visualizer. Double-tap to show the album art" : "Album art. Double-tap to show the visualizer")
     }
 
     private var titleRow: some View {
@@ -239,6 +282,13 @@ struct NowPlayingView: View {
             Spacer()
             AirPlayButton().frame(width: 40, height: 40)
             Spacer()
+            Button { withAnimation(.easeInOut(duration: 0.3)) { lyricsOn.toggle() } } label: {
+                Image(systemName: lyricsOn ? "quote.bubble.fill" : "quote.bubble")
+                    .font(.title3).frame(width: 40, height: 40)
+                    .background(.white.opacity(lyricsOn ? 0.18 : 0), in: Circle())
+            }
+            .accessibilityLabel("Lyrics")
+            .accessibilityAddTraits(lyricsOn ? .isSelected : [])
             Button { showQueue = true } label: {
                 Image(systemName: "list.bullet").font(.title3).frame(width: 40, height: 40)
             }

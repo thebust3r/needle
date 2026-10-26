@@ -32,6 +32,7 @@ final class AppModel {
     let equalizer = Equalizer()
     let downloads = Downloads()
     let local = LocalLibrary()
+    let lyrics = LyricsStore()
 
     var client: SubsonicClient { SubsonicClient(config: settings.config) }
 

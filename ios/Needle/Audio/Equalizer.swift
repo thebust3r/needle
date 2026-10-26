@@ -1,4 +1,5 @@
 import Accelerate
+import QuartzCore
 import Foundation
 import Observation
 import os
@@ -176,6 +177,7 @@ final class EQProcessor {
     private var ring = [Float](repeating: 0, count: EQProcessor.fftSize)
     private var ringPos = 0
     private var _sampleRate: Double = 44100
+    private var lastFeed: CFTimeInterval = 0
     var spectrumEnabled = false
 
     func update(gains: [Float], preamp: Float, clipGuard: Bool) {
@@ -201,6 +203,7 @@ final class EQProcessor {
         guard spectrumEnabled else { return }
         os_unfair_lock_lock(&lock)
         _sampleRate = sampleRate
+        lastFeed = CACurrentMediaTime()
         let n = ring.count
         for i in 0..<count {
             ring[ringPos] = samples[i]
@@ -220,16 +223,16 @@ final class EQProcessor {
     }()
     private var smoothed = [Float](repeating: 0, count: 64)
 
-    /// Returns `bins` values between 0 and 1, spaced like hearing (log frequency).
-    func spectrum(bins: Int = 64) -> [Float] {
+    /// FFT of the most recent audio: magnitudes, sample rate, and the raw samples (oldest first).
+    private func analyze() -> (mags: [Float], fs: Double, samples: [Float], fresh: Bool)? {
         let n = EQProcessor.fftSize
-        if smoothed.count != bins { smoothed = [Float](repeating: 0, count: bins) }
         os_unfair_lock_lock(&lock)
         var samples = [Float](repeating: 0, count: n)
         for i in 0..<n { samples[i] = ring[(ringPos + i) % n] }
         let fs = _sampleRate
+        let fresh = CACurrentMediaTime() - lastFeed < 0.3
         os_unfair_lock_unlock(&lock)
-        guard let setup = fftSetup else { return smoothed }
+        guard let setup = fftSetup else { return nil }
 
         var windowed = [Float](repeating: 0, count: n)
         vDSP_vmul(samples, 1, window, 1, &windowed, 1, vDSP_Length(n))
@@ -250,19 +253,46 @@ final class EQProcessor {
                 }
             }
         }
+        return (mags, fs, samples, fresh)
+    }
 
+    /// Peak level (0...1) per log-spaced band between `lo` and `hi` Hz.
+    private static func bands(_ mags: [Float], fs: Double, bins: Int, lo: Double, hi: Double) -> [Float] {
+        let n = mags.count * 2
         let binHz = fs / Double(n)
-        let lo = 25.0, hi = min(20000.0, fs / 2)
-        for b in 0..<bins {
-            let f0 = lo * pow(hi / lo, Double(b) / Double(bins))
-            let f1 = lo * pow(hi / lo, Double(b + 1) / Double(bins))
+        let top = min(hi, fs / 2)
+        return (0..<bins).map { b in
+            let f0 = lo * pow(top / lo, Double(b) / Double(bins))
+            let f1 = lo * pow(top / lo, Double(b + 1) / Double(bins))
             let i0 = max(1, Int(f0 / binHz)), i1 = max(i0 + 1, min(n / 2, Int(f1 / binHz)))
             var peak: Float = 0
             for i in i0..<i1 { peak = max(peak, mags[i]) }
             let db = 20 * log10(peak / Float(n) + 1e-9)
-            let level = min(1, max(0, (db + 72) / 62))
+            return min(1, max(0, (db + 72) / 62))
+        }
+    }
+
+    /// Returns `bins` values between 0 and 1, spaced like hearing (log frequency). Smoothed for the EQ display.
+    func spectrum(bins: Int = 64) -> [Float] {
+        if smoothed.count != bins { smoothed = [Float](repeating: 0, count: bins) }
+        guard let a = analyze() else { return smoothed }
+        let levels = EQProcessor.bands(a.mags, fs: a.fs, bins: bins, lo: 25, hi: 20000)
+        for b in 0..<bins {
+            let level = levels[b]
             smoothed[b] = level > smoothed[b] ? level * 0.6 + smoothed[b] * 0.4 : smoothed[b] * 0.86 + level * 0.14
         }
         return smoothed
+    }
+
+    /// Unsmoothed bands and the waveform, for the visualizer (it does its own smoothing and beat detection).
+    func vizInput(bins: Int = VizEngine.bins, playing: Bool) -> VizInput {
+        guard playing, let a = analyze(), a.fresh else {
+            return VizInput(levels: [Float](repeating: 0, count: bins), wave: [], live: false)
+        }
+        let levels = EQProcessor.bands(a.mags, fs: a.fs, bins: bins, lo: 30, hi: 16000)
+        let recent = a.samples.suffix(1024)
+        let step = recent.count / 256
+        let wave = stride(from: recent.startIndex, to: recent.endIndex, by: max(1, step)).map { a.samples[$0] }
+        return VizInput(levels: levels, wave: wave, live: true)
     }
 }

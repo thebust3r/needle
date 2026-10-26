@@ -18,6 +18,30 @@ jobs:
         working-directory: ios
         run: xcodegen generate
 
+      - name: Test in an iPhone simulator
+        shell: bash
+        run: |
+          set +e
+          DEVICE=$(xcrun simctl list devices available | grep -E "iPhone 1[5-7]( Pro)? \(" | head -1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')
+          echo "Simulator: $DEVICE"
+          xcodebuild test -project ios/Needle.xcodeproj -scheme Needle -configuration Debug \
+            -destination "id=$DEVICE" -derivedDataPath testbuild CODE_SIGNING_ALLOWED=NO > test.log 2>&1
+          status=$?
+          # results show up as notes on the run
+          summary=$(grep -E "Executed [0-9]+ tests?" test.log | tail -1 | sed 's/^[[:space:]]*//')
+          echo "::notice title=App tests::${summary:-no summary (see errors)}"
+          grep -o "METRIC .*" test.log | sort -u > metrics.txt
+          if [ -s metrics.txt ]; then
+            split -l 20 metrics.txt mpart_
+            for f in mpart_*; do msg=$(sed 's/%/%25/g' "$f" | awk '{printf "%s%%0A", $0}'); echo "::notice title=Benchmarks $f::$msg"; done
+          fi
+          grep -E "error:|Test Case .* failed" test.log | sed "s#$GITHUB_WORKSPACE/##" | sort -u > failures.txt
+          if [ -s failures.txt ]; then
+            split -l 12 failures.txt fpart_
+            for f in fpart_*; do msg=$(sed 's/%/%25/g' "$f" | awk '{printf "%s%%0A", $0}'); echo "::error title=Test failures $f::$msg"; done
+          fi
+          exit $status
+
       - name: Build (Sideloadly or AltStore signs it with your Apple ID)
         shell: bash
         run: |

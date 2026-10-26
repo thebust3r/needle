@@ -93,6 +93,9 @@ struct SubsonicResponse: Decodable {
         var entry: [Song]?
     }
     struct SongList: Decodable { var song: [Song]? }
+    struct LyricsLine: Decodable { var start: Int?; var value: String? }
+    struct StructuredLyrics: Decodable { var synced: Bool?; var offset: Int?; var line: [LyricsLine]? }
+    struct LyricsList: Decodable { var structuredLyrics: [StructuredLyrics]? }
 
     let status: String
     var error: ServerError?
@@ -105,6 +108,7 @@ struct SubsonicResponse: Decodable {
     var playlist: PlaylistWithSongs?
     var randomSongs: SongList?
     var starred2: SearchResult?
+    var lyricsList: LyricsList?
 }
 
 // MARK: - Something the player can play: a server song or a file on this iPhone
