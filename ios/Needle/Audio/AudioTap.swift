@@ -121,10 +121,10 @@ enum AudioTap {
             version: kMTAudioProcessingTapCallbacksVersion_0,
             clientInfo: ctx.toOpaque(),
             init: tapInit, finalize: tapFinalize, prepare: tapPrepare, unprepare: tapUnprepare, process: tapProcess)
-        var tap: MTAudioProcessingTap?
+        var unmanaged: Unmanaged<MTAudioProcessingTap>?
         let err = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks,
-                                             kMTAudioProcessingTapCreationFlag_PostEffects, &tap)
-        guard err == noErr, let tap else {
+                                             kMTAudioProcessingTapCreationFlag_PostEffects, &unmanaged)
+        guard err == noErr, let tap = unmanaged?.takeRetainedValue() else {
             ctx.release()
             return
         }
