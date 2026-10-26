@@ -44,6 +44,9 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/Needle.app Payload/
+          # placeholder ("ad-hoc") signature so Sideloadly/AltStore can re-sign it with your Apple ID
+          codesign --force --deep --sign - Payload/Needle.app
+          codesign --verify --verbose Payload/Needle.app
           zip -qry Needle.ipa Payload
 
       - uses: actions/upload-artifact@v4
