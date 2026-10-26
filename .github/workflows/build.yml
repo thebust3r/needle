@@ -1,0 +1,36 @@
+name: Build iPhone app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build (unsigned — AltStore signs it on your phone)
+        run: |
+          xcodebuild -project ios/Needle.xcodeproj -scheme Needle -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+
+      - name: Package .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Needle.app Payload/
+          zip -qry Needle.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Needle-ipa
+          path: Needle.ipa

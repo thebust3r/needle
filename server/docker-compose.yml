@@ -1,0 +1,17 @@
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+    ports:
+      - "4533:4533"
+    environment:
+      - TZ=America/Chicago
+      - ND_SCANSCHEDULE=1h          # look for new music every hour
+      - ND_LOGLEVEL=info
+      - ND_SESSIONTIMEOUT=168h
+      - ND_ENABLESHARING=false
+    volumes:
+      - ./data:/data
+      - /volume1/Music:/music:ro   # read-only: Navidrome never changes your files
+    mem_limit: 384m

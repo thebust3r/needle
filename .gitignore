@@ -1,0 +1,5 @@
+build/
+*.xcodeproj/
+ios/Needle/Info.plist
+server/data/
+.DS_Store
