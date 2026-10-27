@@ -160,6 +160,21 @@ final class Player {
         }
     }
 
+    private var holdTask: Task<Void, Never>?
+
+    /// Starts (step != nil) or stops jumping through the song while a button is held.
+    func holdSeek(_ step: Double?) {
+        holdTask?.cancel()
+        holdTask = nil
+        guard let step else { return }
+        holdTask = Task { [weak self] in
+            while !Task.isCancelled, let self {
+                self.seek(to: self.currentTime + step)
+                try? await Task.sleep(for: .milliseconds(600))
+            }
+        }
+    }
+
     func seek(to seconds: Double) {
         let s = max(0, min(seconds, max(duration - 0.5, 0)))
         currentTime = s
@@ -380,6 +395,18 @@ final class Player {
         cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
         cc.nextTrackCommand.addTarget { [weak self] _ in self?.next(); return .success }
         cc.previousTrackCommand.addTarget { [weak self] _ in self?.previous(); return .success }
+        // Holding next / previous on a car stereo, steering wheel or headphones: jump 10 seconds,
+        // and keep jumping every half second while it's held (like Apple Music and Spotify).
+        cc.seekForwardCommand.addTarget { [weak self] e in
+            guard let e = e as? MPSeekCommandEvent else { return .commandFailed }
+            self?.holdSeek(e.type == .beginSeeking ? 10 : nil)
+            return .success
+        }
+        cc.seekBackwardCommand.addTarget { [weak self] e in
+            guard let e = e as? MPSeekCommandEvent else { return .commandFailed }
+            self?.holdSeek(e.type == .beginSeeking ? -10 : nil)
+            return .success
+        }
         cc.changePlaybackPositionCommand.addTarget { [weak self] e in
             guard let e = e as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self?.seek(to: e.positionTime)
