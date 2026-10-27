@@ -115,6 +115,34 @@ async def main():
         await pg.wait_for_function("player.playing && player.time() > 0.3", timeout=10000)
         check("off = normal speed again", await pg.evaluate("player.el.playbackRate") == 1)
         check("no script errors", not errs, errs[:3])
+
+        # the plain-http home address: browsers turn off audio-thread code there, chops must still work
+        ctx2 = await browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+        await ctx2.add_init_script("Object.defineProperty(BaseAudioContext.prototype, 'audioWorklet', {get() { return undefined; }});"
+                                   "delete window.AudioWorkletNode;"
+                                   "if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded','1');"
+                                   "localStorage.setItem('needle.cfg', JSON.stringify({user:'mason',pass:'pw'}));"
+                                   "localStorage.setItem('needle.eq', JSON.stringify({enabled:false}));"
+                                   "localStorage.setItem('needle.screwChops', JSON.stringify('live'));"
+                                   "localStorage.setItem('needle.weatherOn','false'); }")
+        pg2 = await ctx2.new_page()
+        errs2 = []
+        pg2.on("pageerror", lambda e: errs2.append(str(e)))
+        await pg2.goto(BASE + "#/album/al1")
+        await pg2.wait_for_selector(".row[data-index='0']")
+        await pg2.click(".row[data-index='0']")
+        await pg2.wait_for_function("player.playing && player.time() > 0.3", timeout=10000)
+        check("http mode: no audio-thread support, as on 192.168.x.x", await pg2.evaluate("!audio.ctx.audioWorklet"))
+        await pg2.wait_for_function("audio.chop && audio.chop.node", timeout=5000)
+        check("http mode: chopper runs on the page instead", True)
+        await pg2.wait_for_function("screw.stats && screw.stats.confidence > 0.15", timeout=20000)
+        check("http mode: locks on the beat", True, f"{await pg2.evaluate('screw.stats.bpm'):.1f} BPM")
+        await pg2.click("#mini")
+        await pg2.wait_for_timeout(500)
+        await pg2.click("[data-move='doubleUp']")
+        await pg2.wait_for_function("livePads.log.length >= 1", timeout=3000)
+        check("http mode: pads fire", await pg2.evaluate("JSON.stringify(livePads.log[0])") == '["doubleUp",true]', await pg2.evaluate("JSON.stringify(livePads.log)"))
+        check("http mode: no script errors", not errs2, errs2[:3])
         await browser.close()
 
 try:

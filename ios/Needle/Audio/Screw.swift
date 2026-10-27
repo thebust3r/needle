@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import Observation
 import os
@@ -141,28 +142,38 @@ final class ScrewSettings: @unchecked Sendable {
 // MARK: - Beat tracking
 
 /// Finds the tempo and where the beats fall, from the audio as it plays (same as the web player's chop-worklet.js).
-/// Onsets (sudden rises in low end, overall level and hi-hats/snares) are collected every 512 samples;
-/// the tempo is the spacing at which that pattern best repeats, and the beat position is the
-/// offset that best lines up with the strongest kicks.
+/// Onsets: spectral flux (1024-point FFT every 512 samples, 24 log-spaced bands). Tempo: an autocorrelation of that,
+/// averaged over ~6 s so it doesn't flip between tempos, with votes from half a beat, 2 and 4 beats so it picks the
+/// real pulse. Beats: the offset whose evenly spaced hits are strongest over the last 12 beats.
+/// Tuned on real songs: see web/tests/beats/README-beats.md.
 final class BeatTracker {
     let sampleRate: Double
     static let hop = 512
+    static let N = 1024
     private let maxHops: Int
     private var env: [Float]
-    private var envLow: [Float]              // low-end (kick) onsets, used to place the beats
-    private var raw: [Double]                // scratch for the tempo search (allocated once, not on the audio thread)
-    private var scores: [Double]
-    private var phase: [Float]
-    private var lin: [Float]                 // the onset window copied out in order, minus its mean (for the tempo search)
-    private var envCount = 0                 // total hops seen
-    private(set) var level: Float = 0        // slow running loudness
-    private var prevLowForPhase: Float = 0
-    private var acc = 0, accLow: Float = 0, accAll: Float = 0, accHigh: Float = 0
-    private var lp: Float = 0, lp2: Float = 0
-    private var prevLow: Float = 0, prevAll: Float = 0, prevHigh: Float = 0
-    private var lowHist: (Float, Float, Float) = (0, 0, 0)
+    private var buf: [Float]
+    private var re: [Float], im: [Float]
+    private let window: [Float]
+    private let fftSetup: FFTSetup?
+    private let edges: [Int]
+    private var prevBands = [Float](repeating: 0, count: 24)
+    private var hist = [Float](repeating: 0, count: 16)
+    private var histSum: Float = 0
+    private var fill = 0
+    private var A: [Double]
+    private var lin: [Double]
+    private var sc: [Double]
+    private var ph: [Double]
+    private var envCount = 0
     private var sinceEstimate = 0
+    private var estimates = 0
     private let minLag: Int, maxLag: Int
+    private(set) var level: Float = 0        // slow running loudness
+
+    // tuning (same as the web)
+    private let ema = 0.96, center = 107.0, sigma = 0.6, hyst = 1.12, combBeats = 12, conf0 = 0.06, conf1 = 0.2
+    private let harm = (0.25, 0.5, 0.25)     // votes from half a beat, 2 beats, 4 beats
 
     /// Samples per beat, or 0 while still listening.
     private(set) var period: Double = 0
@@ -176,145 +187,175 @@ final class BeatTracker {
 
     init(sampleRate: Double) {
         self.sampleRate = sampleRate
-        maxHops = Int(6.0 * sampleRate / Double(Self.hop))
-        let hps = sampleRate / Double(Self.hop)
-        minLag = Int(hps * 60 / 180)
-        maxLag = Int(hps * 60 / 55) + 1
+        let N = Self.N
+        maxHops = Int(8.0 * sampleRate / Double(Self.hop))
         env = [Float](repeating: 0, count: maxHops)
-        envLow = [Float](repeating: 0, count: maxHops)
-        raw = [Double](repeating: 0, count: 2 * maxLag + 2)
-        scores = [Double](repeating: 0, count: maxLag + 2)
-        phase = [Float](repeating: 0, count: maxLag + 2)
-        lin = [Float](repeating: 0, count: maxHops)
+        buf = [Float](repeating: 0, count: N)
+        re = [Float](repeating: 0, count: N); im = [Float](repeating: 0, count: N)
+        window = (0..<N).map { Float(0.5 - 0.5 * cos(2 * Double.pi * Double($0) / Double(N - 1))) }
+        fftSetup = vDSP_create_fftsetup(vDSP_Length(log2(Double(N))), FFTRadix(kFFTRadix2))
+        let binHz = sampleRate / Double(N)
+        edges = (0...24).map { b in max(1, Int((40 * pow(11000.0 / 40, Double(b) / 24) / binHz).rounded())) }
+        let hps = sampleRate / Double(Self.hop)
+        minLag = Int(hps * 60 / 190); maxLag = Int((hps * 60 / 50).rounded(.up))
+        A = [Double](repeating: 0, count: 4 * maxLag + 4)
+        lin = [Double](repeating: 0, count: maxHops)
+        sc = [Double](repeating: 0, count: maxLag + 2)
+        ph = [Double](repeating: 0, count: maxLag + 2)
     }
 
     func reset() {
-        envCount = 0; acc = 0; accLow = 0; accAll = 0; accHigh = 0; lp = 0; lp2 = 0
-        prevLow = 0; prevAll = 0; prevHigh = 0; lowHist = (0, 0, 0)
-        period = 0; anchor = 0; confidence = 0; samplesSeen = 0; sinceEstimate = 0; level = 0; prevLowForPhase = 0
-        for i in env.indices { env[i] = 0; envLow[i] = 0 }
+        envCount = 0; fill = 0; period = 0; anchor = 0; confidence = 0; samplesSeen = 0; sinceEstimate = 0; level = 0
+        estimates = 0; histSum = 0
+        for i in env.indices { env[i] = 0 }
+        for i in buf.indices { buf[i] = 0 }
+        for i in prevBands.indices { prevBands[i] = 0 }
+        for i in hist.indices { hist[i] = 0 }
+        for i in A.indices { A[i] = 0 }
     }
 
     func feed(_ x: UnsafePointer<Float>, count: Int, stride: Int = 1) {
-        let a = Float(1 - exp(-2 * Double.pi * 180 / sampleRate))      // ~180 Hz low-pass for the kick
-        let a2 = Float(1 - exp(-2 * Double.pi * 2500 / sampleRate))    // above ~2.5 kHz: hats and snares
+        let N = Self.N, hop = Self.hop
         for i in 0..<count {
             let s = x[i * stride]
-            lp += a * (s - lp)
-            lp2 += a2 * (s - lp2)
-            let h = s - lp2
-            accHigh += h * h
-            accLow += lp * lp
-            accAll += s * s
             level = level * 0.99998 + s * s * 0.00002
-            acc += 1
-            if acc == Self.hop { pushHop() }
+            buf[fill] = s; fill += 1
+            if fill == N {
+                frame()
+                for j in 0..<(N - hop) { buf[j] = buf[j + hop] }
+                fill = N - hop
+            }
         }
         samplesSeen += count
     }
 
-    private func pushHop() {
-        // The low band is averaged over ~35 ms for the tempo, so long sliding 808s (whose energy ripples hop to hop)
-        // don't drown the pattern. Hats and snares count too, for songs where the bass never really "hits".
-        lowHist = (lowHist.1, lowHist.2, accLow)
-        let lowRaw = log1p(accLow * 40), low = log1p((lowHist.0 + lowHist.1 + lowHist.2) / 3 * 40)
-        let all = log1p(accAll * 10), high = log1p(accHigh * 200)
-        let onset = max(0, low - prevLow) + 0.5 * max(0, all - prevAll) + 0.7 * max(0, high - prevHigh)
-        prevLow = low; prevAll = all; prevHigh = high
-        accLow = 0; accAll = 0; accHigh = 0; acc = 0
-        env[envCount % maxHops] = onset
-        envLow[envCount % maxHops] = max(0, lowRaw - prevLowForPhase)
-        prevLowForPhase = lowRaw
-        envCount += 1
-        sinceEstimate += 1
-        if sinceEstimate >= Int(0.25 * sampleRate / Double(Self.hop)), envCount >= Int(3 * sampleRate / Double(Self.hop)) {
-            sinceEstimate = 0
-            estimate()
+    deinit { if let fftSetup { vDSP_destroy_fftsetup(fftSetup) } }
+
+    /// In-place complex FFT of re/im (unscaled, like the web version's).
+    private func fft() {
+        guard let fftSetup else { return }
+        re.withUnsafeMutableBufferPointer { r in
+            im.withUnsafeMutableBufferPointer { i in
+                var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
+                vDSP_fft_zip(fftSetup, &split, 1, vDSP_Length(log2(Double(Self.N))), FFTDirection(kFFTDirection_Forward))
+            }
         }
     }
 
-    private func e(_ hopIndex: Int) -> Float {     // onset at an absolute hop index (0 if forgotten)
-        guard hopIndex >= 0, hopIndex < envCount, envCount - hopIndex <= maxHops else { return 0 }
-        return env[hopIndex % maxHops]
+    private func frame() {
+        for i in 0..<Self.N { re[i] = buf[i] * window[i]; im[i] = 0 }
+        fft()
+        var flux: Float = 0
+        for b in 0..<24 {
+            let a = edges[b], e = max(a + 1, edges[b + 1])
+            var s: Float = 0
+            for k in a..<e { s += (re[k] * re[k] + im[k] * im[k]).squareRoot() }
+            let v = log1p(10 * s / Float(e - a))
+            flux += max(0, v - prevBands[b])
+            prevBands[b] = v
+        }
+        flux /= 24
+        // take away the slowly-moving part (busy passages vs sparse ones), keep the hits
+        let k = envCount % 16
+        histSum += flux - hist[k]; hist[k] = flux
+        env[envCount % maxHops] = max(0, flux - histSum / 16)
+        envCount += 1
+        sinceEstimate += 1
+        let hps = sampleRate / Double(Self.hop)
+        if sinceEstimate >= Int(0.25 * hps), envCount >= Int(3 * hps) { sinceEstimate = 0; estimate() }
     }
-    private func eLow(_ hopIndex: Int) -> Float {
-        guard hopIndex >= 0, hopIndex < envCount, envCount - hopIndex <= maxHops else { return 0 }
-        return envLow[hopIndex % maxHops]
+
+    private func e(_ i: Int) -> Double {     // onset at an absolute hop index (0 if forgotten or not yet here)
+        guard i >= 0, i < envCount, envCount - i <= maxHops else { return 0 }
+        return Double(env[i % maxHops])
     }
 
     private func estimate() {
-        let n = min(envCount, maxHops)
-        let hopsPerSec = sampleRate / Double(Self.hop)
-        let start = envCount - n
-        var mean: Float = 0
+        let n = min(envCount, maxHops), hps = sampleRate / Double(Self.hop), start = envCount - n
+        var mean = 0.0
         for i in start..<envCount { mean += e(i) }
-        mean /= Float(n)
-        var var0: Float = 0
-        for k in 0..<n { let v = e(start + k) - mean; lin[k] = v; var0 += v * v }
-        var0 /= Float(n)
-        // Autocorrelation, plus a half-weight vote from twice the lag: a beat that also lines up two beats later (where
-        // kicks and 808s usually repeat) wins over an in-between lag that only the steady hi-hats agree with.
-        let lo = minLag, hi = 2 * maxLag + 1
+        mean /= Double(n)
+        // lightly smoothed, so a beat that falls between two analysis steps (e.g. 120 BPM at 48 kHz) still counts fully
+        var var0 = 0.0
+        for k in 0..<n {
+            let i = start + k
+            let v = 0.25 * e(i - 1) + 0.5 * e(i) + 0.25 * e(i + 1) - mean
+            lin[k] = v; var0 += v * v
+        }
+        var0 /= Double(n)
+        let loud = level > 0.0001                 // about -40 dB: actual music, not hiss or a fade
+        guard var0 > 1e-12, loud else {           // too quiet to learn from: forget, start fresh when it comes in
+            confidence = 0; estimates = 0; period = 0; return
+        }
+        // average evenly while warming up, then a ~6 s memory
+        let w = min(ema, Double(estimates) / Double(estimates + 1))
         lin.withUnsafeBufferPointer { x in
-            raw.withUnsafeMutableBufferPointer { out in
-                for lag in lo...hi {
-                    guard lag < n else { out[lag] = 0; continue }
-                    var s: Float = 0
-                    var i = lag
-                    while i < n { s += x[i] * x[i - lag]; i += 1 }
-                    out[lag] = Double(s) / Double(n - lag)
+            A.withUnsafeMutableBufferPointer { A in
+                for lag in (minLag / 2)...(4 * maxLag + 3) {
+                    var r = 0.0
+                    if lag < n {
+                        var s = 0.0, i = lag
+                        while i < n { s += x[i] * x[i - lag]; i += 1 }
+                        r = s / Double(n - lag) / var0
+                    }
+                    A[lag] = A[lag] * w + r * (1 - w)
                 }
             }
         }
-        var best = 0.0, bestLag = 0
+        estimates += 1
+        let cur = period > 0 ? period / Double(Self.hop) : 0
+        func at(_ l: Double) -> Double { max(0, A[Int(l.rounded(.down))], A[Int(l.rounded(.up))]) }
+        var best = -1.0, bestLag = 0
         for lag in minLag...maxLag {
-            var v = (raw[lag] + 0.5 * max(0, raw[2 * lag])) / 1.5
-            // prefer tempos between ~70 and ~140 BPM (most rap, R&B and rock), gently
-            let octaves = log2(60 * hopsPerSec / Double(lag) / 100)
-            v *= exp(-0.5 * (octaves * octaves) / 0.36)
-            scores[lag] = v
+            var v = (A[lag] + harm.0 * at(Double(lag) / 2) + harm.1 * max(0, A[2 * lag]) + harm.2 * max(0, A[4 * lag]))
+                / (1 + harm.0 + harm.1 + harm.2)
+            let oct = log2(60 * hps / Double(lag) / center)
+            v *= exp(-0.5 * oct * oct / (sigma * sigma))
+            if cur > 0, abs(Double(lag) / cur - 1) < 0.04 { v *= hyst }    // stick with the tempo we have unless something's clearly better
+            sc[lag] = v
             if v > best { best = v; bestLag = lag }
         }
-        guard bestLag > 0, best > 0 else { confidence = 0; return }
-        // sub-hop accuracy from the neighbors
+        guard bestLag > minLag, bestLag < maxLag else { confidence = 0; return }
+        let l = sc[bestLag - 1], r = sc[bestLag + 1], den = l - 2 * best + r
         var lag = Double(bestLag)
-        let l = scores[max(minLag, bestLag - 1)], r = scores[min(maxLag, bestLag + 1)]
-        let denom = l - 2 * best + r
-        if denom < 0 { lag += 0.5 * (l - r) / denom }
-        let newPeriod = lag * Double(Self.hop)
-        // how clearly it repeats compared with the overall wobble (hiss or silence score low), and only for actual music
-        let pOct = log2(60 * hopsPerSec / Double(bestLag) / 100)
-        let prior = exp(-0.5 * (pOct * pOct) / 0.36)
-        let strength = var0 > 1e-9 ? best / prior / Double(var0) : 0
-        var recent: Float = 0
-        for i in (envCount - Int(2 * hopsPerSec))..<envCount { recent += e(i) }
-        let loudEnough = level > 0.0001            // about -40 dB: actual music, not hiss
-        confidence = recent < 0.5 || !loudEnough ? 0 : max(0, min(1, (strength - 0.12) / 0.3))
+        if den < 0 { lag += max(-0.5, min(0.5, 0.5 * (l - r) / den)) }
+        let peak = A[bestLag]
+        // real music has sharp hits; steady tones, noise and room sound only make small, even ripples
+        var hit = 0.0
+        for i in (envCount - Int(2 * hps))..<envCount { hit = max(hit, e(i)) }
+        let hits = max(0, min(1, (hit - 0.4) / 0.12))
+        let settled = min(1, Double(estimates) / 12)         // ~3 s of listening before trusting the tempo
+        confidence = settled * hits * max(0, min(1, (peak - conf0) / (conf1 - conf0)))
 
-        // where the beats are: the offset whose evenly spaced hits are strongest over the last 8 beats
-        let steps = max(1, min(Int(lag), phase.count))
-        var bestPhase = 0, bestScore: Float = -1
-        for o in 0..<steps {
-            var sc: Float = 0
-            for k in 0..<8 {
-                let idx = envCount - 1 - o - Int((Double(k) * lag).rounded())
-                sc += eLow(idx) + 0.5 * (eLow(idx - 1) + eLow(idx + 1)) + 0.3 * e(idx)
+        // beats: the offset whose evenly spaced hits are strongest over the last few beats (recent ones count more)
+        let steps = max(1, min(Int(lag), ph.count))
+        var bp = 0, bs = -1.0
+        for off in 0..<steps {
+            var s = 0.0
+            for k in 0..<combBeats {
+                let idx = envCount - 1 - off - Int((Double(k) * lag).rounded())
+                let wk = 1 - Double(k) / (Double(combBeats) * 1.5)
+                s += wk * (e(idx) + 0.5 * (e(idx - 1) + e(idx + 1)))
             }
-            phase[o] = sc
-            if sc > bestScore { bestScore = sc; bestPhase = o }
+            ph[off] = s
+            if s > bs { bs = s; bp = off }
         }
-        let pl = phase[(bestPhase - 1 + steps) % steps], pr = phase[(bestPhase + 1) % steps]
-        let pd = pl - 2 * bestScore + pr
-        let frac = pd < 0 ? max(-0.5, min(0.5, Double(0.5 * (pl - pr) / pd))) : 0
-        let beatHop = Double(envCount - 1) - (Double(bestPhase) + frac)
-        // an onset is measured at the end of its hop; the hit itself started about half a hop earlier
-        let newAnchor = (beatHop + 0.5) * Double(Self.hop)
-        if period > 0, abs(newPeriod - period) / period < 0.04 {
-            period = period * 0.5 + newPeriod * 0.5         // steady: smooth small wobbles, still follow drift
+        let pl = ph[(bp - 1 + steps) % steps], pr = ph[(bp + 1) % steps], pd = pl - 2 * bs + pr
+        let frac = pd < 0 ? max(-0.5, min(0.5, 0.5 * (pl - pr) / pd)) : 0
+        let newPeriod = lag * Double(Self.hop)
+        // a flux frame ends at hop end; the hit started about where the frame's newest half begins
+        let newAnchor = (Double(envCount - 1) - (Double(bp) + frac)) * Double(Self.hop) + Double(Self.N - Self.hop)
+        let sameTempo = period > 0 && abs(newPeriod / period - 1) < 0.04
+        period = sameTempo ? period * 0.6 + newPeriod * 0.4 : newPeriod
+        if sameTempo {
+            // nudge the grid toward the new estimate instead of jumping (unless it's far off)
+            var d = (newAnchor - anchor).truncatingRemainder(dividingBy: period)
+            if d > period / 2 { d -= period }
+            if d < -period / 2 { d += period }
+            anchor = abs(d) < period * 0.15 ? anchor + d * 0.5 : newAnchor
         } else {
-            period = newPeriod
+            anchor = newAnchor
         }
-        anchor = newAnchor
     }
 
     /// The first beat at or after `sample`.

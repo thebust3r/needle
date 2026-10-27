@@ -957,6 +957,43 @@ final class ScrewTests: XCTestCase {
         XCTAssertGreaterThan(c.history.count, 0, "chops come back once the beat is found again")
     }
 
+    func testNoBeatNoLock() {
+        let n = Int(30 * sr)
+        var rng: UInt64 = 3
+        func noise() -> Float { rng = rng &* 6364136223846793005 &+ 1442695040888963407; return Float(Int64(bitPattern: rng >> 1) % 2000) / 2000 - 0.5 }
+        let hiss = (0..<n).map { _ in noise() * 0.3 }
+        let chord = (0..<n).map { i -> Float in
+            let t = Double(i) / sr
+            return Float(0.2 * (sin(2 * .pi * 220 * t) + sin(2 * .pi * 277 * t) + sin(2 * .pi * 330 * t)) * (0.7 + 0.3 * sin(t * 0.5)))
+        }
+        for (name, x) in [("noise", hiss), ("held chord", chord)] {
+            var maxConf = 0.0
+            let (c, _, _) = run(x, amount: .heavy) { c, i in if i > Int(4 * self.sr) { maxConf = max(maxConf, c.tracker.confidence) } }
+            metric("screw.nobeat \(name) max_confidence=\(String(format: "%.2f", maxConf)) chops=\(c.count)")
+            XCTAssertLessThan(maxConf, 0.15, "\(name) has no beat, so it never locks")
+            XCTAssertEqual(c.count, 0)
+        }
+    }
+
+    func testTempoAt48kHz() {
+        // iPhones usually run at 48 kHz, where 120 BPM falls between two analysis steps
+        let rate = 48000.0, n = Int(20 * rate)
+        var x = [Float](repeating: 0, count: n)
+        var rng: UInt64 = 11
+        for i in 0..<n {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            let r = Float(Int64(bitPattern: rng >> 1) % 2000) / 2000 - 0.5
+            let t = Double(i) / rate, beat = (t * 2).truncatingRemainder(dividingBy: 1)
+            x[i] = Float(0.25 * sin(2 * .pi * 130.8 * t) + 0.35 * sin(2 * .pi * 55 * t) * exp(-beat * 9))
+            x[i] += r * Float(0.08 * exp(-(t * 4).truncatingRemainder(dividingBy: 1) * 20))
+        }
+        let t = BeatTracker(sampleRate: rate)
+        x.withUnsafeBufferPointer { p in var i = 0; while i < n { t.feed(p.baseAddress! + i, count: min(512, n - i)); i += 512 } }
+        metric("screw.48k found=\(String(format: "%.1f", t.bpm)) confidence=\(String(format: "%.2f", t.confidence))")
+        XCTAssertEqual(t.bpm, 120, accuracy: 2)
+        XCTAssertGreaterThan(t.confidence, 0.15)
+    }
+
     // MARK: live chops
 
     func testLiveNeverChopsOnItsOwnAndWaitsForTheBeat() {

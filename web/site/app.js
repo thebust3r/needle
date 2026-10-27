@@ -225,17 +225,58 @@ const audio = {
     this.analyser.connect(this.ctx.destination);
     this.apply();
     // chops run on the audio thread, between the EQ and the meters
+    const onChopMessage = (d) => { if ("fired" in d) livePads.fired(d.fired, d.ok); else { screw.stats = d; livePads.status(); } };
     if (this.ctx.audioWorklet) {
       this.ctx.audioWorklet.addModule("chop-worklet.js").then(() => {
         const node = new AudioWorkletNode(this.ctx, "needle-chop", { outputChannelCount: [2] });
         this.pre.disconnect();
         this.pre.connect(node);
         node.connect(this.vizAnalyser);
-        node.port.onmessage = (e) => { if ("fired" in e.data) livePads.fired(e.data.fired, e.data.ok); else { screw.stats = e.data; livePads.status(); } };
+        node.port.onmessage = (e) => onChopMessage(e.data);
         this.chop = node;
         this.setChops(screw.chops);
-      }).catch(() => { /* older browser: everything else still works */ });
-    }
+      }).catch(() => this.chopFallback(onChopMessage));
+    } else this.chopFallback(onChopMessage);
+  },
+  /** Browsers only allow audio-thread code on https pages. On the plain http home address (192.168.x.x),
+      run the same chopper on the page instead: a little more delay, same chops. */
+  chopFallback(onMessage) {
+    if (this.chop || !this.ctx.createScriptProcessor) return;
+    const start = () => {
+      if (typeof Chopper === "undefined") return;
+      const ctx = this.ctx, chopper = new Chopper(ctx.sampleRate);
+      let amount = "off", lastReport = 0, frames = 0;
+      const sp = ctx.createScriptProcessor(2048, 2, 2);
+      sp.onaudioprocess = (e) => {
+        const inp = e.inputBuffer, out = e.outputBuffer, n = inp.length, chans = [];
+        for (let c = 0; c < out.numberOfChannels; c++) { const o = out.getChannelData(c); o.set(inp.getChannelData(Math.min(c, inp.numberOfChannels - 1))); chans.push(o); }
+        if (amount !== "off" || chopper.active) {
+          // same 128-sample steps as the audio thread, so beats and cuts line up the same way
+          for (let i = 0; i < n; i += 128) chopper.process(chans.map((ch) => ch.subarray(i, i + 128)), Math.min(128, n - i), amount);
+        }
+        frames += n;
+        if (frames - lastReport > ctx.sampleRate) {
+          lastReport = frames;
+          const t = chopper.tracker, h = chopper.history;
+          onMessage({ bpm: t.bpm, confidence: t.confidence, chops: h.length, last: h.length ? h[h.length - 1].name : null });
+        }
+      };
+      this.pre.disconnect();
+      this.pre.connect(sp);
+      sp.connect(this.vizAnalyser);
+      this.chop = { node: sp, port: { postMessage: (d) => {
+        if (d.amount) amount = d.amount;
+        if (d.reset) chopper.reset();
+        if (d.trigger) setTimeout(() => onMessage({ fired: d.trigger, ok: chopper.trigger(d.trigger, d.hold) }));
+        if (d.release) chopper.release();
+      } } };
+      this.setChops(screw.chops);
+    };
+    if (typeof Chopper !== "undefined") return start();
+    const sc = document.createElement("script");
+    sc.src = "chop-worklet.js";
+    sc.onload = start;
+    document.head.appendChild(sc);
   },
   setChops(amount) { if (this.chop) this.chop.port.postMessage({ amount }); },
   resetChops() { if (this.chop) this.chop.port.postMessage({ reset: true }); },
@@ -1218,7 +1259,7 @@ function openScrew() {
         `<button data-chops="${k}" class="${screw.chops === k ? "on" : ""}"><b>${k[0].toUpperCase() + k.slice(1)}</b><span>${d}</span></button>`).join("")}</div>
       ${screw.chops === "live" ? `<p class="sp-live">Pads show up under the song on Now Playing. Tap one and it cuts back right away, in time. Hold <b>Repeat</b> to loop a beat.${matchMedia("(pointer: fine)").matches ? " Keys 1–5 work too." : ""}</p>` : ""}
       ${screw.chops !== "off" ? `<p class="sp-status" id="sp-status"></p>` : ""}
-      <p class="sp-note">Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Needle has found the rhythm.${!window.AudioWorkletNode ? " Chops need a newer browser." : ""}</p>
+      <p class="sp-note">Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Needle has found the rhythm.</p>
       <button class="sp-done">Done</button></div>`;
   };
   let timer = 0;

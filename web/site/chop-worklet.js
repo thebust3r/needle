@@ -1,124 +1,156 @@
-/* Needle web: chopped & screwed, running on the browser's audio thread.
+/* Needle web: chopped & screwed, running on the browser's audio thread (or the page, on plain-http addresses).
    Same beat tracker and chopper as the iPhone app (ios/Needle/Audio/Screw.swift). */
 "use strict";
 
 class BeatTracker {
   constructor(sampleRate) {
+    // tuned on real songs (see web/tests/beats/README-beats.md): tempo memory ~6 s, gentle preference around 107 BPM,
+    // votes from half a beat, 2 beats and 4 beats so it picks the real pulse over in-between tempos
+    this.o = { win: 8, ema: 0.96, center: 107, sigma: 0.6, hyst: 1.12, combBeats: 12, conf0: 0.06, conf1: 0.2, h: [0.25, 0.5, 0.25] };
     this.sampleRate = sampleRate;
-    this.hop = 512;
-    this.maxHops = Math.floor(6 * sampleRate / this.hop);
+    this.hop = 512; this.N = 1024;
+    this.maxHops = Math.floor(this.o.win * sampleRate / this.hop);
     this.env = new Float32Array(this.maxHops);
-    this.envLow = new Float32Array(this.maxHops);
+    this.buf = new Float32Array(this.N);
+    this.re = new Float32Array(this.N); this.im = new Float32Array(this.N);
+    this.win = new Float32Array(this.N);
+    for (let i = 0; i < this.N; i++) this.win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (this.N - 1));
+    // bit reversal + twiddles
+    this.rev = new Uint16Array(this.N);
+    for (let i = 0, bits = Math.log2(this.N); i < this.N; i++) { let r = 0; for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b); this.rev[i] = r; }
+    this.cos = new Float32Array(this.N / 2); this.sin = new Float32Array(this.N / 2);
+    for (let i = 0; i < this.N / 2; i++) { this.cos[i] = Math.cos(2 * Math.PI * i / this.N); this.sin[i] = -Math.sin(2 * Math.PI * i / this.N); }
+    // 24 bands, log spaced from ~40 Hz to ~11 kHz
+    const binHz = sampleRate / this.N, edges = [];
+    for (let b = 0; b <= 24; b++) edges.push(Math.max(1, Math.round(40 * Math.pow(11000 / 40, b / 24) / binHz)));
+    this.edges = edges;
+    this.bands = new Float32Array(24); this.prevBands = new Float32Array(24);
+    const hps = sampleRate / this.hop;
+    this.minLag = Math.floor(hps * 60 / 190); this.maxLag = Math.ceil(hps * 60 / 50);
+    this.A = new Float64Array(4 * this.maxLag + 4);
+    this.lin = new Float32Array(this.maxHops);
+    this.sc = new Float64Array(this.maxLag + 2);
+    this.ph = new Float64Array(this.maxLag + 2);
+    this.hist = new Float32Array(16);
     this.reset();
   }
   reset() {
-    this.envCount = 0; this.acc = 0; this.accLow = 0; this.accAll = 0; this.lp = 0; this.prevLow = 0; this.prevAll = 0;
-    this.lp2 = 0; this.accHigh = 0; this.prevHigh = 0; this.lowHist = [0, 0, 0];
-    this.period = 0; this.anchor = 0; this.confidence = 0; this.samplesSeen = 0; this.sinceEstimate = 0; this.level = 0;
-    this.env.fill(0); this.envLow.fill(0);
+    this.envCount = 0; this.fill = 0; this.period = 0; this.anchor = 0; this.confidence = 0; this.samplesSeen = 0;
+    this.sinceEstimate = 0; this.level = 0; this.env.fill(0); this.buf.fill(0); this.prevBands.fill(0); this.A.fill(0);
+    this.hist.fill(0); this.histSum = 0; this.estimates = 0;
   }
   get bpm() { return this.period > 0 ? 60 * this.sampleRate / this.period : 0; }
   feed(x, count) {
-    const a = 1 - Math.exp(-2 * Math.PI * 180 / this.sampleRate), a2 = 1 - Math.exp(-2 * Math.PI * 2500 / this.sampleRate);
     for (let i = 0; i < count; i++) {
       const s = x[i];
-      this.lp += a * (s - this.lp);
-      this.lp2 += a2 * (s - this.lp2);
-      const h = s - this.lp2;
-      this.accHigh += h * h;
-      this.accLow += this.lp * this.lp;
-      this.accAll += s * s;
-      this.level = this.level * 0.99998 + s * s * 0.00002;     // slow running loudness (~1 s)
-      if (++this.acc === this.hop) this.pushHop();
+      this.level = this.level * 0.99998 + s * s * 0.00002;
+      this.buf[this.fill++] = s;
+      if (this.fill === this.N) { this.frame(); this.buf.copyWithin(0, this.hop); this.fill = this.N - this.hop; }
     }
     this.samplesSeen += count;
   }
-  pushHop() {
-    // Low band is averaged over ~35 ms for the tempo, so long sliding 808s (whose energy ripples hop to hop) don't
-    // drown the pattern. Hats and snares (high band) also count, for songs where the bass never really "hits".
-    const lh = this.lowHist; lh.shift(); lh.push(this.accLow);
-    const lowRaw = Math.log1p(this.accLow * 40), low = Math.log1p((lh[0] + lh[1] + lh[2]) / 3 * 40);
-    const all = Math.log1p(this.accAll * 10), high = Math.log1p(this.accHigh * 200);
-    const onset = Math.max(0, low - this.prevLow) + 0.5 * Math.max(0, all - this.prevAll) + 0.7 * Math.max(0, high - this.prevHigh);
-    this.prevLow = low; this.prevAll = all; this.prevHigh = high;
-    this.accLow = 0; this.accAll = 0; this.accHigh = 0; this.acc = 0;
-    this.env[this.envCount % this.maxHops] = onset;
-    this.envLow[this.envCount % this.maxHops] = Math.max(0, lowRaw - this.prevLowForPhase || 0);
-    this.prevLowForPhase = lowRaw;
-    this.envCount++;
-    this.sinceEstimate++;
-    const hps = this.sampleRate / this.hop;
-    if (this.sinceEstimate >= Math.floor(0.25 * hps) && this.envCount >= Math.floor(3 * hps)) { this.sinceEstimate = 0; this.estimate(); }
-  }
-  e(i) {
-    if (i < 0 || i >= this.envCount || this.envCount - i > this.maxHops) return 0;
-    return this.env[i % this.maxHops];
-  }
-  eLow(i) {
-    if (i < 0 || i >= this.envCount || this.envCount - i > this.maxHops) return 0;
-    return this.envLow[i % this.maxHops];
-  }
-  estimate() {
-    const n = Math.min(this.envCount, this.maxHops), hps = this.sampleRate / this.hop;
-    const minLag = Math.floor(hps * 60 / 180), maxLag = Math.floor(hps * 60 / 55) + 1;
-    const start = this.envCount - n;
-    let mean = 0;
-    for (let i = start; i < this.envCount; i++) mean += this.e(i);
-    mean /= n;
-    let var0 = 0;
-    for (let i = start; i < this.envCount; i++) var0 += (this.e(i) - mean) ** 2;
-    var0 /= n;
-    // Autocorrelation, plus a half-weight vote from twice the lag: a beat that also lines up two beats later (where
-    // kicks and 808s usually repeat) wins over an in-between lag that only the steady hi-hats agree with.
-    const raw = new Float64Array(2 * maxLag + 2);
-    for (let lag = minLag; lag <= 2 * maxLag + 1 && lag < n; lag++) {
-      let s = 0;
-      for (let i = start + lag; i < this.envCount; i++) s += (this.e(i) - mean) * (this.e(i - lag) - mean);
-      raw[lag] = s / (n - lag);
-    }
-    let best = 0, bestLag = 0;
-    const scores = new Float64Array(maxLag + 2);
-    for (let lag = minLag; lag <= maxLag; lag++) {
-      let v = (raw[lag] + 0.5 * Math.max(0, raw[2 * lag])) / 1.5;
-      const oct = Math.log2((60 * hps / lag) / 100);
-      v *= Math.exp(-0.5 * (oct * oct) / 0.36);
-      scores[lag] = v;
-      if (v > best) { best = v; bestLag = lag; }
-    }
-    if (!bestLag || best <= 0) { this.confidence = 0; return; }
-    let lag = bestLag;
-    const l = scores[Math.max(minLag, bestLag - 1)], r = scores[Math.min(maxLag, bestLag + 1)], den = l - 2 * best + r;
-    if (den < 0) lag += 0.5 * (l - r) / den;
-    const newPeriod = lag * this.hop;
-    const prior = Math.exp(-0.5 * (Math.log2((60 * hps / bestLag) / 100) ** 2) / 0.36);
-    const strength = var0 > 1e-9 ? best / prior / var0 : 0;                // 0 = no repeating pattern, 1 = perfect
-    const recent = (() => { let a = 0; for (let i = this.envCount - Math.floor(2 * hps); i < this.envCount; i++) a += this.e(i); return a; })();
-    const loudEnough = this.level > 0.0001;                                 // about -40 dB: actual music, not hiss
-    this.confidence = recent < 0.5 || !loudEnough ? 0 : Math.max(0, Math.min(1, (strength - 0.12) / 0.3));
-    let bestPhase = 0, bestScore = -1;
-    const phase = new Float64Array(Math.max(1, Math.floor(lag)));
-    for (let o = 0; o < Math.max(1, Math.floor(lag)); o++) {
-      let sc = 0;
-      for (let k = 0; k < 8; k++) {
-        const idx = this.envCount - 1 - o - Math.round(k * lag);
-        sc += this.eLow(idx) + 0.5 * (this.eLow(idx - 1) + this.eLow(idx + 1)) + 0.3 * this.e(idx);
+  fft() {
+    const N = this.N, re = this.re, im = this.im;
+    for (let i = 0; i < N; i++) { const r = this.rev[i]; if (r > i) { let t = re[i]; re[i] = re[r]; re[r] = t; t = im[i]; im[i] = im[r]; im[r] = t; } }
+    for (let size = 2; size <= N; size <<= 1) {
+      const half = size >> 1, step = N / size;
+      for (let st = 0; st < N; st += size) for (let j = 0, k = 0; j < half; j++, k += step) {
+        const a = st + j, b = a + half, tr = re[b] * this.cos[k] - im[b] * this.sin[k], ti = re[b] * this.sin[k] + im[b] * this.cos[k];
+        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
       }
-      phase[o] = sc;
-      if (sc > bestScore) { bestScore = sc; bestPhase = o; }
     }
-    // sub-step accuracy from the neighbors
-    const steps = Math.max(1, Math.floor(lag));
-    const pl = phase[(bestPhase - 1 + steps) % steps], pr = phase[(bestPhase + 1) % steps], pd = pl - 2 * bestScore + pr;
-    let frac = pd < 0 ? 0.5 * (pl - pr) / pd : 0;
-    frac = Math.max(-0.5, Math.min(0.5, frac));
-    const newAnchor = (this.envCount - 1 - (bestPhase + frac) + 0.5) * this.hop;
-    this.period = this.period > 0 && Math.abs(newPeriod - this.period) / this.period < 0.04 ? this.period * 0.5 + newPeriod * 0.5 : newPeriod;
-    this.anchor = newAnchor;
   }
-  nextBeat(sample) {
-    if (this.period <= 0) return null;
-    return this.anchor + Math.ceil((sample - this.anchor) / this.period) * this.period;
+  frame() {
+    for (let i = 0; i < this.N; i++) { this.re[i] = this.buf[i] * this.win[i]; this.im[i] = 0; }
+    this.fft();
+    let flux = 0;
+    for (let b = 0; b < 24; b++) {
+      let s = 0; const a = this.edges[b], e = Math.max(a + 1, this.edges[b + 1]);
+      for (let k = a; k < e; k++) s += Math.sqrt(this.re[k] * this.re[k] + this.im[k] * this.im[k]);
+      const v = Math.log1p(10 * s / (e - a));
+      const d = Math.max(0, v - this.prevBands[b]);
+      flux += d;
+      this.prevBands[b] = v;
+    }
+    flux /= 24;
+    // take away the slowly-moving part (busy passages vs sparse ones), keep the hits
+    const h = this.hist, k = this.envCount % 16;
+    this.histSum += flux - h[k]; h[k] = flux;
+    const o = Math.max(0, flux - this.histSum / 16);
+    this.env[this.envCount % this.maxHops] = o;
+    this.envCount++;
+    const hps = this.sampleRate / this.hop;
+    if (++this.sinceEstimate >= Math.floor(0.25 * hps) && this.envCount >= Math.floor(3 * hps)) { this.sinceEstimate = 0; this.estimate(); }
   }
+  e(i) { return i < 0 || i >= this.envCount || this.envCount - i > this.maxHops ? 0 : this.env[i % this.maxHops]; }
+  estimate() {
+    const o = this.o, n = Math.min(this.envCount, this.maxHops), hps = this.sampleRate / this.hop, start = this.envCount - n;
+    let mean = 0; for (let i = start; i < this.envCount; i++) mean += this.e(i); mean /= n;
+    // lightly smoothed, so a beat that falls between two analysis steps (e.g. 120 BPM at 48 kHz) still counts fully
+    let var0 = 0; const x = this.lin;
+    for (let k = 0; k < n; k++) {
+      const i = start + k, v = 0.25 * this.e(i - 1) + 0.5 * this.e(i) + 0.25 * this.e(i + 1) - mean;
+      x[k] = v; var0 += v * v;
+    }
+    var0 /= n;
+    const loud = this.level > 0.0001;                       // about -40 dB: actual music, not hiss or a fade
+    if (var0 < 1e-12 || !loud) {                            // too quiet to learn from: forget, start fresh when it comes in
+      this.confidence = 0; this.estimates = 0; this.period = 0; return;
+    }
+    // average evenly while warming up, then a ~6 s memory
+    const A = this.A, ema = Math.min(o.ema, this.estimates / (this.estimates + 1));
+    for (let lag = Math.floor(this.minLag / 2); lag <= 4 * this.maxLag + 3; lag++) {
+      let s = 0; for (let i = lag; i < n; i++) s += x[i] * x[i - lag];
+      const r = lag < n ? s / (n - lag) / var0 : 0;
+      A[lag] = A[lag] * ema + r * (1 - ema);
+    }
+    this.estimates++;
+    let best = -1, bestLag = 0;
+    const cur = this.period > 0 ? this.period / this.hop : 0;
+    const score = (lag) => {
+      const h = o.h, at = (l) => Math.max(0, A[Math.floor(l)], A[Math.ceil(l)]);
+      let v = (A[lag] + h[0] * at(lag / 2) + h[1] * Math.max(0, A[2 * lag]) + h[2] * Math.max(0, A[4 * lag])) / (1 + h[0] + h[1] + h[2]);
+      const oct = Math.log2(60 * hps / lag / o.center);
+      v *= Math.exp(-0.5 * oct * oct / (o.sigma * o.sigma));
+      if (cur && Math.abs(lag / cur - 1) < 0.04) v *= o.hyst;     // stick with the tempo we have unless something's clearly better
+      return v;
+    };
+    const sc = this.sc;
+    for (let lag = this.minLag; lag <= this.maxLag; lag++) { sc[lag] = score(lag); if (sc[lag] > best) { best = sc[lag]; bestLag = lag; } }
+    if (bestLag <= this.minLag || bestLag >= this.maxLag) { this.confidence = 0; return; }
+    const l = sc[bestLag - 1], r = sc[bestLag + 1], den = l - 2 * best + r;
+    let lag = bestLag; if (den < 0) lag += Math.max(-0.5, Math.min(0.5, 0.5 * (l - r) / den));
+    const peak = A[bestLag];
+    // real music has sharp hits; steady tones, noise and room sound only make small, even ripples
+    let hit = 0; for (let i = this.envCount - Math.floor(2 * hps); i < this.envCount; i++) hit = Math.max(hit, this.e(i));
+    const hits = Math.max(0, Math.min(1, (hit - 0.4) / 0.12));
+    const settled = Math.min(1, this.estimates / 12);          // give it ~3 s of listening before trusting the tempo
+    this.confidence = settled * hits * Math.max(0, Math.min(1, (peak - o.conf0) / (o.conf1 - o.conf0)));
+    // beats: the offset whose evenly spaced hits are strongest over the last few beats (recent ones count more)
+    const steps = Math.max(1, Math.min(Math.floor(lag), this.ph.length)), ph = this.ph;
+    let bp = 0, bs = -1;
+    for (let off = 0; off < steps; off++) {
+      let s = 0;
+      for (let k = 0; k < o.combBeats; k++) {
+        const idx = this.envCount - 1 - off - Math.round(k * lag), w = 1 - k / (o.combBeats * 1.5);
+        s += w * (this.e(idx) + 0.5 * (this.e(idx - 1) + this.e(idx + 1)));
+      }
+      ph[off] = s; if (s > bs) { bs = s; bp = off; }
+    }
+    const pl = ph[(bp - 1 + steps) % steps], pr = ph[(bp + 1) % steps], pd = pl - 2 * bs + pr;
+    const frac = pd < 0 ? Math.max(-0.5, Math.min(0.5, 0.5 * (pl - pr) / pd)) : 0;
+    const newPeriod = lag * this.hop;
+    // a flux frame ends at hop end; the hit started about where the frame's newest half begins
+    const newAnchor = (this.envCount - 1 - (bp + frac)) * this.hop + this.N - this.hop;
+    const sameTempo = this.period > 0 && Math.abs(newPeriod / this.period - 1) < 0.04;
+    this.period = sameTempo ? this.period * 0.6 + newPeriod * 0.4 : newPeriod;
+    if (sameTempo) {
+      // nudge the grid toward the new estimate instead of jumping (unless it's far off)
+      let d = (newAnchor - this.anchor) % this.period; if (d > this.period / 2) d -= this.period; if (d < -this.period / 2) d += this.period;
+      this.anchor = Math.abs(d) < this.period * 0.15 ? this.anchor + d * 0.5 : newAnchor;
+    } else this.anchor = newAnchor;
+  }
+  nextBeat(sample) { return this.period <= 0 ? null : this.anchor + Math.ceil((sample - this.anchor) / this.period) * this.period; }
 }
 
 // how often a chop can start (in beats) and how likely it is each time; heavy also picks the wilder moves more
