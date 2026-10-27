@@ -11,6 +11,7 @@ struct NowPlayingView: View {
     @State private var backdrop: UIImage?
     @State private var showEQ = false
     @State private var showScrew = false
+    @State private var showVizCustom = false
     @State private var showQueue = false
     @State private var artDrag: CGFloat = 0
     @State private var sheetDrag: CGFloat = 0
@@ -60,6 +61,12 @@ struct NowPlayingView: View {
                 .presentationBackground(.ultraThinMaterial)
         }
         .fullScreenCover(isPresented: $showVizFull) { VizFullScreen() }
+        .sheet(isPresented: $showVizCustom) {
+            VizCustomizeSheet()
+                .presentationDetents([.fraction(0.5), .large])
+                .presentationBackground(.ultraThinMaterial)
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.5)))
+        }
         .sheet(isPresented: $showScrew) {
             ScrewSheet(tint: palette.accent)
                 .presentationDetents([.height(540), .large])
@@ -143,6 +150,12 @@ struct NowPlayingView: View {
                         HStack {
                             Button { viz.cycle() } label: { VizChip(text: viz.label) }
                             Spacer()
+                            Button { showVizCustom = true } label: {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.footnote.weight(.semibold)).frame(width: 34, height: 34)
+                                    .background(.black.opacity(0.45), in: Circle())
+                            }
+                            .accessibilityLabel("Customize the visualizer")
                             Button { showVizFull = true } label: {
                                 Image(systemName: "arrow.up.left.and.arrow.down.right")
                                     .font(.footnote.weight(.semibold)).frame(width: 34, height: 34)

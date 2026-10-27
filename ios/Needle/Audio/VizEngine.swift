@@ -1,5 +1,5 @@
-import CoreGraphics
 import Foundation
+import simd
 import UIKit
 
 /// What the visualizer hears each frame.
@@ -9,20 +9,71 @@ struct VizInput {
     var live: Bool           // false = nothing playing, show calm idle motion
 }
 
-/// The visualizer: an original, Neon-spirited light show driven by the music.
-/// Same behavior as the web version:
+/// How the visualizer looks: picked in the Customize sheet, remembered.
+struct VizLook: Codable, Equatable {
+    var theme: VizTheme = .album
+    var intensity: Float = 1      // reactivity: 0.4 chill ... 2 max
+    var trails: Float = 0.6       // 0 short ... 1 long
+    var speed: Float = 1          // 0.4 slow ... 2 fast
+    var mirror = false            // kaleidoscope
+}
+
+enum VizTheme: String, Codable, CaseIterable, Identifiable {
+    case album, neon, fire, ice, vapor, toxic, mono
+    var id: String { rawValue }
+    var name: String {
+        switch self {
+        case .album: return "Album Colors"
+        case .neon: return "Neon"
+        case .fire: return "Fire"
+        case .ice: return "Ice"
+        case .vapor: return "Vaporwave"
+        case .toxic: return "Toxic"
+        case .mono: return "Mono"
+        }
+    }
+    /// Fixed colors, or nil to follow the album.
+    var colors: [SIMD3<Float>]? {
+        switch self {
+        case .album: return nil
+        case .neon: return [[0.1, 0.95, 1], [1, 0.2, 0.85], [0.6, 1, 0.2]]
+        case .fire: return [[1, 0.25, 0.05], [1, 0.62, 0.1], [1, 0.95, 0.5]]
+        case .ice: return [[0.2, 0.55, 1], [0.35, 0.95, 1], [0.92, 0.97, 1]]
+        case .vapor: return [[1, 0.42, 0.75], [0.62, 0.38, 1], [0.25, 0.95, 0.9]]
+        case .toxic: return [[0.45, 1, 0.1], [0.1, 1, 0.55], [0.95, 1, 0.2]]
+        case .mono: return [[1, 1, 1], [0.75, 0.78, 0.85], [0.5, 0.52, 0.6]]
+        }
+    }
+}
+
+/// Everything the shaders need for one frame (layout matches `struct U` in VizShaders).
+struct VizUniforms {
+    var res = SIMD4<Float>()      // width, height, time, flow
+    var band = SIMD4<Float>()     // bass, mid, high, energy
+    var look = SIMD4<Float>()     // beat, mode, trails, speed
+    var more = SIMD4<Float>()     // mirror, calm
+    var c1 = SIMD4<Float>(), c2 = SIMD4<Float>(), c3 = SIMD4<Float>()
+    var touch = SIMD4<Float>(0.5, 0.5, 0, 10)
+    var tap = SIMD4<Float>(0.5, 0.5, 0, 0)
+}
+
+/// The visualizer's brain: listens to the music and decides what the picture does. Drawing is done on the
+/// graphics chip by `VizRenderer`. Same behavior as the web version:
 /// - flashes are capped at 3 per second and kept soft (WCAG 2.3.1)
 /// - Reduce Motion slows everything down and turns flashes off
-/// Drawing is plain Core Graphics into a bitmap, so it's easy to test and runs anywhere.
+/// - quiet songs are boosted so they react too; hits are instant and fall off smoothly
 final class VizEngine {
     enum Mode: Int, CaseIterable {
-        case tunnel, prism, hyper, melt
+        case tunnel, prism, hyper, melt, bars, nebula, mandala
         var name: String {
             switch self {
             case .tunnel: return "Warp Ring"
             case .prism: return "Prism"
             case .hyper: return "Hyperspace"
             case .melt: return "Melt"
+            case .bars: return "Equalizer"
+            case .nebula: return "Nebula"
+            case .mandala: return "Mandala"
             }
         }
     }
@@ -40,11 +91,10 @@ final class VizEngine {
     var mode: Mode = .tunnel
     var auto = false
     var reducedMotion = false
+    var look = VizLook()
     var onModeChange: ((Mode) -> Void)?
 
     private(set) var stats = Stats()
-    private(set) var width = 0
-    private(set) var height = 0
     private(set) var bass: Float = 0
     private(set) var mid: Float = 0
     private(set) var high: Float = 0
@@ -53,10 +103,14 @@ final class VizEngine {
     /// 0...1 strength of the soft beat flash. Shown on a separate layer, never drawn into the trails.
     private(set) var flash: Float = 0
     private(set) var live = false
+    private(set) var flow: Double = 0
+    /// What gets drawn per band (after the quiet-song boost and smoothing), 0...~1.2.
+    private(set) var shown = [Float](repeating: 0, count: VizEngine.bins)
+    private(set) var wave = [Float](repeating: 0, count: 128)
 
-    private var ctx: CGContext?
     private var levels = [Float](repeating: 0, count: VizEngine.bins)
-    private var wave: [Float] = []
+    private var peaks = [Float](repeating: 0.3, count: VizEngine.bins)
+    private var rawBass: Float = 0
     private var baseHue: Double = 175
     private var bassAvg: Float = 0
     private var longAvg: Float = 0
@@ -65,23 +119,12 @@ final class VizEngine {
     private var lastSwitch: Double = 0
     private var flashTimes: [Double] = []
 
-    private struct Star { var x: Double; var y: Double; var z: Double; var hue: Double }
-    private var stars: [Star] = []
-
-    private static let neon: [CGColor] = (0..<360).map {
-        UIColor(hue: CGFloat($0) / 360, saturation: 0.82, brightness: 1, alpha: 1).cgColor
-    }
-    private static let neonDim: [CGColor] = (0..<360).map {
-        UIColor(hue: CGFloat($0) / 360, saturation: 0.82, brightness: 1, alpha: 0.55).cgColor
-    }
-
-    init() {
-        stars = (0..<260).map { _ in VizEngine.newStar(z: .random(in: 0...1)) }
-    }
-
-    private static func newStar(z: Double = 1) -> Star {
-        Star(x: .random(in: -1...1), y: .random(in: -1...1), z: z, hue: .random(in: 0...120))
-    }
+    // touch (fullscreen): drag swirls, tap bursts
+    private(set) var touchSwirl: Float = 0
+    private var touchPoint = SIMD2<Float>(0.5, 0.5)
+    private var tapPoint = SIMD2<Float>(0.5, 0.5)
+    private var tapTime: Double = -10
+    private var clock: Double = 0
 
     func resetStats() { stats = Stats() }
 
@@ -95,67 +138,62 @@ final class VizEngine {
         mode = all[((mode.rawValue + step) % all.count + all.count) % all.count]
     }
 
-    func flashColor() -> CGColor { VizEngine.neon[hueAt(200)] }
-
-    // MARK: - Canvas
-
-    func resize(width w: Int, height h: Int) {
-        let w = max(32, w), h = max(32, h)
-        guard w != width || h != height || ctx == nil else { return }
-        width = w; height = h
-        ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                        space: CGColorSpaceCreateDeviceRGB(),
-                        bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-        ctx?.interpolationQuality = .low
-        ctx?.setFillColor(UIColor.black.cgColor)
-        ctx?.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    /// Finger position in 0...1 screen coordinates (y down). `moved` is how far it went since the last call.
+    func drag(to x: Float, _ y: Float, moved: Float) {
+        touchPoint = SIMD2(x, 1 - y)
+        touchSwirl = min(1.5, touchSwirl + moved * 6)
     }
 
-    /// Draws one frame. `time` and `dt` are in seconds.
-    @discardableResult
-    func render(time t: Double, dt: Double, input: VizInput) -> CGImage? {
-        guard let g = ctx else { return nil }
-        let k = min(dt, 0.06) / (1.0 / 60.0)
-        listen(t, k: k, input: input)
-        baseHue += (reducedMotion ? 0.05 : 0.15) * k
-        let m = Double(min(width, height))
-        switch mode {
-        case .tunnel: drawTunnel(g, t, k, m)
-        case .prism: drawPrism(g, t, k, m)
-        case .hyper: drawHyper(g, t, k, m)
-        case .melt: drawMelt(g, t, k, m)
-        }
-        g.setBlendMode(.normal)
-        g.setAlpha(1)
-        stats.frames += 1
-        return g.makeImage()
+    func tap(at x: Float, _ y: Float) {
+        tapPoint = SIMD2(x, 1 - y)
+        tapTime = clock
     }
 
     // MARK: - Listening
 
-    private func listen(_ t: Double, k: Double, input: VizInput) {
+    /// Takes in one frame of sound. `time` and `dt` are in seconds.
+    func update(time t: Double, dt: Double, input: VizInput) {
+        clock = t
+        let k = min(dt, 0.06) / (1.0 / 60.0)
         live = input.live
         if live, input.levels.count >= VizEngine.bins {
             for b in 0..<VizEngine.bins {
                 let v = max(0, min(1, input.levels[b]))
                 levels[b] = v > levels[b] ? v : levels[b] * 0.82 + v * 0.18
             }
-            wave = input.wave
+            if input.wave.count > 1 {
+                for i in 0..<128 { wave[i] = input.wave[Int(Double(i) / 127 * Double(input.wave.count - 1))] }
+            }
         } else {
             for b in 0..<VizEngine.bins {
                 levels[b] = Float(0.1 + 0.07 * sin(t * 1.1 + Double(b) * 0.35) * sin(t * 0.7 + Double(b) * 0.13))
             }
-            wave = []
+            for i in 0..<128 { wave[i] = Float(sin(Double(i) / 127 * .pi * 4 + t * 2) * 0.12) }
         }
-        bass = levels[0..<6].reduce(0, +) / 6
-        mid = levels[6..<25].reduce(0, +) / 19
-        high = levels[25...].reduce(0, +) / Float(VizEngine.bins - 25)
+        prepare(t, k: k)
+        stats.frames += 1
+    }
+
+    private func prepare(_ t: Double, k: Double) {
+        let I = look.intensity
+        let fall = Float(pow(0.86, k)), idle = Float(pow(0.9, k)), peakFall = Float(pow(0.996, k))
+        for b in 0..<VizEngine.bins {
+            let v = levels[b]
+            if !live { shown[b] = shown[b] * idle + v * 0.6 * (1 - idle); continue }   // paused: calm idle motion only
+            peaks[b] = max(v, peaks[b] * peakFall, 0.12)                               // each band's recent loudest
+            let norm = min(1.2, max(0, v * 0.45 + (v / peaks[b]) * 0.55 * min(1, v * 4))) * I   // boost quiet songs, keep silence dark
+            shown[b] = norm > shown[b] ? norm : shown[b] * fall + norm * (1 - fall)
+        }
+        rawBass = levels[0..<6].reduce(0, +) / 6
+        bass = shown[0..<6].reduce(0, +) / 6
+        mid = shown[6..<25].reduce(0, +) / 19
+        high = shown[25...].reduce(0, +) / Float(VizEngine.bins - 25)
         energy = (bass * 2 + mid + high) / 4
 
-        // a beat = bass jumping clearly above its recent average
-        bassAvg = bassAvg * 0.9 + bass * 0.1
-        longAvg = longAvg * 0.995 + bass * 0.005
-        if live && bass > bassAvg * 1.12 + 0.035 && bass > 0.28 && t - lastBeat > 0.24 {
+        // a beat = bass jumping clearly above its recent average (on the raw level, so safety limits never change)
+        bassAvg = bassAvg * 0.9 + rawBass * 0.1
+        longAvg = longAvg * 0.995 + rawBass * 0.005
+        if live && rawBass > bassAvg * 1.12 + 0.035 && rawBass > 0.28 && t - lastBeat > 0.24 {
             lastBeat = t
             beat = 1
             stats.beats += 1
@@ -163,14 +201,18 @@ final class VizEngine {
         }
         beat *= Float(pow(reducedMotion ? 0.82 : 0.9, k))
         flash *= Float(pow(0.8, k))
+        touchSwirl *= Float(pow(0.9, k))
 
         // a "drop": quiet for a while, then the bass slams back in
-        if live && bass < longAvg * 0.6 {
+        if live && rawBass < longAvg * 0.6 {
             if quietSince == nil { quietSince = t }
         } else if let q = quietSince {
-            if auto && t - q > 1.5 && bass > longAvg * 1.3 { switchMode(t) }
+            if auto && t - q > 1.5 && rawBass > longAvg * 1.3 { switchMode(t) }
             quietSince = nil
         }
+        // the slow current everything drifts along: always moving, faster when the music is busy
+        flow += (k / 60) * Double(0.25 + 1.6 * energy) * Double(look.speed) * (reducedMotion ? 0.35 : 1)
+        baseHue += (reducedMotion ? 0.05 : 0.15) * k
     }
 
     private func onBeat(_ t: Double) {
@@ -192,140 +234,36 @@ final class VizEngine {
         onModeChange?(mode)
     }
 
-    // MARK: - Drawing
+    // MARK: - For the renderer
 
-    private func hueAt(_ offset: Double) -> Int { ((Int((baseHue + offset).rounded()) % 360) + 360) % 360 }
-
-    private func sample(_ i: Int, _ count: Int) -> Double {
-        guard live, wave.count > 1 else {
-            return sin(Double(i) / Double(count) * .pi * 4 + Date().timeIntervalSinceReferenceDate * 2) * 0.15
-        }
-        return Double(wave[Int(Double(i) / Double(count) * Double(wave.count - 1))])
+    func palette() -> [SIMD3<Float>] {
+        if let c = look.theme.colors { return c }
+        return [Self.hsv(baseHue, 0.85, 1), Self.hsv(baseHue + 120, 0.85, 1), Self.hsv(baseHue + 220, 0.75, 1)]
     }
 
-    private func feedback(_ g: CGContext, zoom: Double, rot: Double, decay: Double, dx: Double = 0, dy: Double = 0) {
-        guard let prev = g.makeImage() else { return }
-        let w = Double(width), h = Double(height)
-        g.setBlendMode(.copy)
-        g.setFillColor(UIColor.black.cgColor)
-        g.fill(CGRect(x: 0, y: 0, width: w, height: h))
-        g.setBlendMode(.normal)
-        g.saveGState()
-        g.translateBy(x: w / 2 + dx, y: h / 2 + dy)
-        g.rotate(by: rot)
-        g.scaleBy(x: zoom, y: zoom)
-        g.translateBy(x: -w / 2, y: -h / 2)
-        g.setAlpha(decay)
-        g.draw(prev, in: CGRect(x: 0, y: 0, width: w, height: h))
-        g.restoreGState()
-        g.setAlpha(1)
+    func flashColor() -> CGColor {
+        let c = palette()[1]
+        return UIColor(red: CGFloat(c.x), green: CGFloat(c.y), blue: CGFloat(c.z), alpha: 1).cgColor
     }
 
-    private func drawTunnel(_ g: CGContext, _ t: Double, _ k: Double, _ m: Double) {
-        let slow = reducedMotion ? 0.35 : 1
-        let b = Double(bass), be = Double(beat)
-        feedback(g, zoom: 1 + (0.022 + b * 0.06 + be * 0.035) * slow, rot: (0.003 + Double(mid) * 0.012) * k * slow, decay: 0.84)
-        g.setBlendMode(.plusLighter)
-        let cx = Double(width) / 2, cy = Double(height) / 2
-        let r0 = m * (0.1 + b * 0.07 + be * 0.05), len = m * 0.27
-        g.setLineWidth(max(1.5, m * 0.009))
-        g.setLineCap(.round)
-        let spin = t * 0.4 * slow
-        for side in 0..<2 {
-            for i in 0..<VizEngine.bins {
-                let a = spin + (side == 1 ? -1 : 1) * (Double(i) / Double(VizEngine.bins)) * .pi
-                let l = r0 + Double(levels[i]) * len
-                g.setStrokeColor(VizEngine.neonDim[hueAt(Double(i) * 2.5 + Double(side) * 40)])
-                g.move(to: CGPoint(x: cx + cos(a) * r0, y: cy + sin(a) * r0))
-                g.addLine(to: CGPoint(x: cx + cos(a) * l, y: cy + sin(a) * l))
-                g.strokePath()
-            }
-        }
-        if beat > 0.05 {
-            g.setStrokeColor(VizEngine.neonDim[hueAt(180)])
-            g.setAlpha(CGFloat(beat))
-            g.setLineWidth(m * 0.012)
-            let r = r0 * (1.3 + (1 - be) * 1.6)
-            g.strokeEllipse(in: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
-            g.setAlpha(1)
-        }
+    func uniforms(width: Int, height: Int) -> VizUniforms {
+        let c = palette()
+        var u = VizUniforms()
+        u.res = SIMD4(Float(width), Float(height), Float(clock.truncatingRemainder(dividingBy: 10_000)), Float(flow.truncatingRemainder(dividingBy: 10_000)))
+        u.band = SIMD4(bass, mid, high, energy)
+        u.look = SIMD4(reducedMotion ? beat * 0.4 : beat, Float(mode.rawValue), 0.80 + look.trails * 0.17, look.speed)
+        u.more = SIMD4(look.mirror ? 1 : 0, reducedMotion ? 0.35 : 1, 0, 0)
+        u.c1 = SIMD4(c[0], 1); u.c2 = SIMD4(c[1], 1); u.c3 = SIMD4(c[2], 1)
+        u.touch = SIMD4(touchPoint.x, touchPoint.y, touchSwirl, Float(clock - tapTime))
+        u.tap = SIMD4(tapPoint.x, tapPoint.y, 0, 0)
+        return u
     }
 
-    private func drawPrism(_ g: CGContext, _ t: Double, _ k: Double, _ m: Double) {
-        let slow = reducedMotion ? 0.35 : 1
-        feedback(g, zoom: 0.982 - Double(beat) * 0.02 * slow, rot: -(0.005 + Double(high) * 0.02) * k * slow, decay: 0.82)
-        g.setBlendMode(.plusLighter)
-        let R = m * 0.48, pts = 48, amp = R * (0.18 + Double(energy) * 0.5)
-        g.setLineWidth(max(1.5, m * 0.007))
-        g.setLineJoin(.round)
-        let turn = t * 0.25 * slow
-        for s in 0..<6 {
-            for mirror in 0..<2 {
-                g.saveGState()
-                g.translateBy(x: Double(width) / 2, y: Double(height) / 2)
-                g.rotate(by: turn + Double(s) * .pi / 3)
-                if mirror == 1 { g.scaleBy(x: 1, y: -1) }
-                g.setStrokeColor(VizEngine.neon[hueAt(Double(s) * 60 + Double(mirror) * 25)])
-                for i in 0...pts {
-                    let x = Double(i) / Double(pts) * R, y = sample(i, pts) * amp * Double(i) / Double(pts)
-                    i == 0 ? g.move(to: CGPoint(x: x, y: y)) : g.addLine(to: CGPoint(x: x, y: y))
-                }
-                g.strokePath()
-                let r = m * (0.006 + Double(high) * 0.03 + Double(beat) * 0.012)
-                g.setFillColor(VizEngine.neon[hueAt(Double(s) * 60 + 180)])
-                g.fillEllipse(in: CGRect(x: R * 0.62 - r, y: sample(30, pts) * amp * 0.62 - r, width: r * 2, height: r * 2))
-                g.restoreGState()
-            }
-        }
-    }
-
-    private func drawHyper(_ g: CGContext, _ t: Double, _ k: Double, _ m: Double) {
-        let slow = reducedMotion ? 0.4 : 1
-        feedback(g, zoom: 1, rot: 0.0012 * k * slow, decay: 0.74)
-        g.setBlendMode(.plusLighter)
-        let speed = (0.004 + Double(bass) * 0.028 + Double(beat) * 0.02) * k * slow
-        let cx = Double(width) / 2, cy = Double(height) / 2, f = m * 0.5 * 0.35
-        g.setLineCap(.round)
-        for i in stars.indices {
-            let z0 = stars[i].z
-            stars[i].z -= speed
-            if stars[i].z <= 0.03 { stars[i] = VizEngine.newStar(); continue }
-            let st = stars[i]
-            let x0 = cx + st.x / z0 * f, y0 = cy + st.y / z0 * f
-            let x1 = cx + st.x / st.z * f, y1 = cy + st.y / st.z * f
-            if x1 < -20 || x1 > Double(width) + 20 || y1 < -20 || y1 > Double(height) + 20 { stars[i] = VizEngine.newStar(); continue }
-            g.setStrokeColor(VizEngine.neon[hueAt(st.hue + Double(high) * 90)])
-            g.setLineWidth(max(1, (1 - st.z) * m * 0.009))
-            g.move(to: CGPoint(x: x0, y: y0))
-            g.addLine(to: CGPoint(x: x1, y: y1))
-            g.strokePath()
-        }
-        g.setFillColor(VizEngine.neonDim[hueAt(0)])
-        g.setAlpha(CGFloat(0.25 + Double(bass) * 0.5))
-        let r = m * (0.02 + Double(bass) * 0.05 + Double(beat) * 0.03)
-        g.fillEllipse(in: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
-        g.setAlpha(1)
-    }
-
-    private func drawMelt(_ g: CGContext, _ t: Double, _ k: Double, _ m: Double) {
-        let slow = reducedMotion ? 0.35 : 1
-        let h = Double(height), w = Double(width)
-        // Core Graphics has y pointing up, so a positive dy drifts the picture upward
-        feedback(g, zoom: 1 + (0.01 + Double(bass) * 0.02) * slow, rot: sin(t * 0.5) * 0.004 * slow, decay: 0.88,
-                 dy: 1.4 * k * slow * (h / 600))
-        g.setBlendMode(.plusLighter)
-        let pts = 64
-        g.setLineJoin(.round)
-        for line in 0..<3 {
-            let yBase = h * (0.62 - Double(line) * 0.13)
-            let amp = h * (0.08 + Double(mid) * 0.22 + Double(beat) * 0.05)
-            g.setStrokeColor(VizEngine.neon[hueAt(Double(line) * 110 + t * 10)])
-            g.setLineWidth(max(1.5, m * (0.006 + Double(line) * 0.002)))
-            for i in 0...pts {
-                let x = Double(i) / Double(pts) * w, y = yBase + sample((i + line * 9) % (pts + 1), pts) * amp
-                i == 0 ? g.move(to: CGPoint(x: x, y: y)) : g.addLine(to: CGPoint(x: x, y: y))
-            }
-            g.strokePath()
-        }
+    static func hsv(_ h: Double, _ s: Double, _ v: Double) -> SIMD3<Float> {
+        let c = UIColor(hue: CGFloat(((h.truncatingRemainder(dividingBy: 360)) + 360).truncatingRemainder(dividingBy: 360) / 360),
+                        saturation: CGFloat(s), brightness: CGFloat(v), alpha: 1)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        c.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return SIMD3(Float(r), Float(g), Float(b))
     }
 }

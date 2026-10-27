@@ -82,9 +82,11 @@
       <div class="viz-flash" aria-hidden="true"></div>
       <div class="viz-ui">
         <button id="viz-mode" class="viz-chip" aria-label="Change visualizer style">Auto</button>
-        <button id="viz-full" class="viz-btn" aria-label="Full-screen visualizer"><svg class="i"><use href="#i-expand"/></svg></button>
+        <span class="viz-right">
+          <button id="viz-custom" class="viz-btn" aria-label="Customize the visualizer"><svg class="i"><use href="#i-sliders"/></svg></button>
+          <button id="viz-full" class="viz-btn" aria-label="Full-screen visualizer"><svg class="i"><use href="#i-expand"/></svg></button>
+        </span>
       </div>
-      <p class="viz-hint" id="viz-hint" hidden>Turn the EQ on to make it react to the music</p>
     </div>
     <div class="lyrics" id="lyrics" hidden><div class="lyrics-body" id="lyrics-body"></div></div>
   </div>
@@ -118,8 +120,14 @@
   <div class="viz-flash" aria-hidden="true"></div>
   <div class="vf-top">
     <button id="vf-close" class="viz-btn" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
-    <button id="vf-mode" class="viz-chip">Auto</button>
+    <span class="vf-styles">
+      <button id="vf-prev" class="viz-btn" aria-label="Previous style"><svg class="i"><use href="#i-back"/></svg></button>
+      <button id="vf-mode" class="viz-chip">Auto</button>
+      <button id="vf-next" class="viz-btn" aria-label="Next style"><svg class="i"><use href="#i-chev"/></svg></button>
+    </span>
+    <button id="vf-custom" class="viz-btn" aria-label="Customize the visualizer"><svg class="i"><use href="#i-sliders"/></svg></button>
   </div>
+  <p class="vf-tip" id="vf-tip">Drag to swirl · tap for a burst</p>
   <div class="vf-bottom"><b id="vf-title"></b><span id="vf-artist"></span></div>
 </section>
 <section id="eq" class="sheet" hidden aria-label="Equalizer"></section>

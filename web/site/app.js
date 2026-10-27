@@ -114,7 +114,7 @@ const screw = {
   chops: store.get("screwChops", "off"),
   stats: null,
   get rate() { return (SPEEDS[this.speed] || SPEEDS.off)[1]; },
-  get routed() { return eq.enabled || this.chops !== "off"; },
+  get routed() { return eq.enabled || this.chops !== "off" || !!(window.vizUI && vizUI.on); },
   label() {
     const s = SPEEDS[this.speed][0];
     if (this.speed === "off") return this.chops === "off" ? "" : "Chopped";

@@ -110,39 +110,45 @@ final class EqualizerTests: XCTestCase {
 
 final class VisualizerTests: XCTestCase {
     /// Test music: a kick drum `bpm` times a minute over steady mids and highs.
-    private func input(_ t: Double, bpm: Double = 120, quiet: Bool = false) -> VizInput {
+    private func input(_ t: Double, bpm: Double = 120, quiet: Bool = false, gain: Float = 1) -> VizInput {
         let period = 60 / bpm
         let kick = !quiet && t.truncatingRemainder(dividingBy: period) < 0.07
-        var levels = [Float](repeating: 0.2, count: VizEngine.bins)
-        for b in 0..<6 { levels[b] = quiet ? 0.05 : (kick ? 0.85 : 0.25) }
-        for b in 6..<25 { levels[b] = quiet ? 0.05 : Float(0.4 + 0.1 * sin(t * 3 + Double(b))) }
-        let wave = (0..<256).map { Float(sin(Double($0) / 256 * .pi * 8 + t * 6) * 0.5) }
+        var levels = [Float](repeating: 0.2 * gain, count: VizEngine.bins)
+        for b in 0..<6 { levels[b] = quiet ? 0.05 : (kick ? 0.85 : 0.25) * gain }
+        for b in 6..<25 { levels[b] = quiet ? 0.05 : Float(0.4 + 0.1 * sin(t * 3 + Double(b))) * gain }
+        let wave = (0..<256).map { Float(sin(Double($0) / 256 * .pi * 8 + t * 6) * 0.5) * gain }
         return VizInput(levels: levels, wave: wave, live: true)
     }
 
-    @discardableResult
-    private func run(_ e: VizEngine, seconds: Double, from start: Double = 0, fps: Double = 60, keep: Bool = false,
-                     make: (Double) -> VizInput) -> [CGImage] {
-        var frames: [CGImage] = []
+    /// Feeds the engine `seconds` of music at 60 fps (no drawing).
+    private func run(_ e: VizEngine, seconds: Double, from start: Double = 0, fps: Double = 60, make: (Double) -> VizInput) {
         var t = start
-        while t < start + seconds {
-            autoreleasepool {
-                let img = e.render(time: t, dt: 1 / fps, input: make(t))
-                if keep, let img { frames.append(img) }
-            }
-            t += 1 / fps
-        }
-        return frames
+        while t < start + seconds { e.update(time: t, dt: 1 / fps, input: make(t)); t += 1 / fps }
     }
 
-    private func brightness(_ img: CGImage) -> Double {
-        let ctx = CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 64,
-                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.draw(img, in: CGRect(x: 0, y: 0, width: 16, height: 16))
-        let p = ctx.data!.assumingMemoryBound(to: UInt8.self)
+    /// Feeds and draws on the graphics chip; returns brightness of each frame (0...255) when `sample` is set.
+    @discardableResult
+    private func render(_ e: VizEngine, _ r: VizRenderer, size: (Int, Int) = (160, 160), seconds: Double, from start: Double = 0,
+                        sampleEvery: Int = 0, make: (Double) -> VizInput) -> [Double] {
+        guard let out = r.makeOutput(width: size.0, height: size.1) else { XCTFail("no output"); return [] }
+        var t = start, i = 0, values: [Double] = []
+        while t < start + seconds {
+            e.update(time: t, dt: 1 / 60, input: make(t))
+            let done = DispatchSemaphore(value: 0)
+            r.draw(engine: e, width: size.0, height: size.1, output: out, completion: { done.signal() })
+            done.wait()
+            if sampleEvery > 0 && i % sampleEvery == 0 { values.append(brightness(r.readBack(out))) }
+            t += 1 / 60; i += 1
+        }
+        return values
+    }
+
+    private func brightness(_ px: [UInt8]) -> Double {
+        guard !px.isEmpty else { return 0 }
         var s = 0.0
-        for i in stride(from: 0, to: 16 * 16 * 4, by: 4) { s += Double(p[i]) + Double(p[i + 1]) + Double(p[i + 2]) }
-        return s / (16 * 16 * 3)
+        var n = 0
+        for i in stride(from: 0, to: px.count, by: 4 * 7) { s += Double(px[i]) + Double(px[i + 1]) + Double(px[i + 2]); n += 3 }
+        return s / Double(n)
     }
 
     private func variance(_ xs: [Double]) -> Double {
@@ -156,7 +162,6 @@ final class VisualizerTests: XCTestCase {
 
     func testBeatDetectionMatches120BPM() {
         let e = VizEngine()
-        e.resize(width: 200, height: 200)
         run(e, seconds: 1, make: { self.input($0) })
         e.resetStats()
         run(e, seconds: 10, from: 1, make: { self.input($0) })
@@ -167,7 +172,6 @@ final class VisualizerTests: XCTestCase {
 
     func testNeverMoreThanThreeFlashesPerSecond() {
         let e = VizEngine()
-        e.resize(width: 200, height: 200)
         run(e, seconds: 10, make: { self.input($0, bpm: 240) })     // 4 beats a second: tries to flash too often
         let worst = maxPerSecond(e.stats.flashLog)
         metric("viz.max_flashes_per_second=\(worst) (limit 3), beats=\(e.stats.beats), flashes=\(e.stats.flashes)")
@@ -177,37 +181,77 @@ final class VisualizerTests: XCTestCase {
         XCTAssertGreaterThan(e.stats.flashes, 20)
     }
 
+    func testFlashLimitHoldsAtMaxReactivity() {
+        let e = VizEngine()
+        e.look.intensity = 2
+        run(e, seconds: 10, make: { self.input($0, bpm: 240) })
+        XCTAssertLessThanOrEqual(maxPerSecond(e.stats.flashLog), 3, "turning reactivity up never breaks the flash limit")
+    }
+
     func testReduceMotionHasNoFlashesButStillReacts() {
         let e = VizEngine()
         e.reducedMotion = true
-        e.resize(width: 200, height: 200)
         run(e, seconds: 6, make: { self.input($0) })
         metric("viz.reduce_motion flashes=\(e.stats.flashes) beats=\(e.stats.beats)")
         XCTAssertEqual(e.stats.flashes, 0)
         XCTAssertGreaterThan(e.stats.beats, 5)
     }
 
-    func testReactsToMusicAndIdlesWhenPaused() {
-        for mode in VizEngine.Mode.allCases {
-            let e = VizEngine()
-            e.mode = mode
-            e.resize(width: 160, height: 160)
-            let liveFrames = run(e, seconds: 3, keep: true, make: { self.input($0) }).suffix(120)
-            let liveBass = e.bass
-            let idleFrames = run(e, seconds: 3, from: 3, keep: true, make: { _ in VizInput(levels: [], wave: [], live: false) }).suffix(120)
-            let lv = variance(liveFrames.enumerated().filter { $0.offset % 4 == 0 }.map { brightness($0.element) })
-            let iv = variance(idleFrames.enumerated().filter { $0.offset % 4 == 0 }.map { brightness($0.element) })
-            metric("viz.\(mode.name) pulse variance live=\(String(format: "%.1f", lv)) idle=\(String(format: "%.2f", iv)) bass live=\(String(format: "%.2f", liveBass)) idle=\(String(format: "%.2f", e.bass))")
-            XCTAssertGreaterThan(liveBass, e.bass, "\(mode.name): bass is higher with music")
-            XCTAssertFalse(e.live, "\(mode.name): paused means idle")
-            XCTAssertGreaterThan(brightness(idleFrames.last!), 0.05, "\(mode.name): idle picture isn't black")
-        }
+    func testQuietSongsAreBoosted() {
+        let loud = VizEngine(), quiet = VizEngine()
+        run(loud, seconds: 4, make: { self.input($0) })
+        run(quiet, seconds: 4, make: { self.input($0, gain: 0.35) })
+        let ratio = quiet.bass / loud.bass
+        metric("viz.quiet_song shown_bass=\(String(format: "%.0f", ratio * 100))% of a loud song at 35% volume")
+        XCTAssertGreaterThan(ratio, 0.55, "a song at a third of the volume still moves it more than half as much")
+    }
+
+    func testReactivitySlider() {
+        let chill = VizEngine(), hype = VizEngine()
+        chill.look.intensity = 0.5; hype.look.intensity = 2
+        run(chill, seconds: 3, make: { self.input($0) })
+        run(hype, seconds: 3, make: { self.input($0) })
+        XCTAssertGreaterThan(hype.bass, chill.bass * 2.5)
+    }
+
+    func testAlwaysFlowing() {
+        let e = VizEngine()
+        run(e, seconds: 1, make: { self.input($0) })
+        let f0 = e.flow
+        run(e, seconds: 1, from: 1, make: { self.input($0) })
+        XCTAssertGreaterThan(e.flow - f0, 0.4, "the current keeps moving")
+        let idle = VizEngine()
+        run(idle, seconds: 1, make: { _ in VizInput(levels: [], wave: [], live: false) })
+        XCTAssertGreaterThan(idle.flow, 0.1, "even when paused it drifts gently")
+        XCTAssertLessThan(idle.flow, e.flow - f0, "and drifts faster with music")
+    }
+
+    func testTouch() {
+        let e = VizEngine()
+        e.drag(to: 0.3, 0.3, moved: 0.2)
+        XCTAssertGreaterThan(e.touchSwirl, 0.5)
+        run(e, seconds: 1.5, make: { self.input($0) })
+        XCTAssertLessThan(e.touchSwirl, 0.05, "the swirl settles after you let go")
+        e.tap(at: 0.25, 0.5)
+        let u = e.uniforms(width: 100, height: 100)
+        XCTAssertEqual(u.tap.x, 0.25, accuracy: 0.001)
+        XCTAssertEqual(u.tap.y, 0.5, accuracy: 0.001)
+        XCTAssertLessThan(u.touch.w, 0.1, "burst starts right away")
+    }
+
+    func testThemes() {
+        let e = VizEngine()
+        e.look.theme = .fire
+        XCTAssertEqual(e.palette()[0], SIMD3<Float>(1, 0.25, 0.05))
+        e.look.theme = .album
+        e.setColor(.blue)
+        let c = e.palette()[0]
+        XCTAssertGreaterThan(c.z, c.x, "Album Colors follows the cover")
     }
 
     func testAutoModeSwitchesOnADrop() {
         let e = VizEngine()
         e.auto = true
-        e.resize(width: 160, height: 160)
         var switched: [VizEngine.Mode] = []
         e.onModeChange = { switched.append($0) }
         run(e, seconds: 4, make: { self.input($0) })
@@ -219,7 +263,6 @@ final class VisualizerTests: XCTestCase {
 
     func testManualModeNeverSwitchesByItself() {
         let e = VizEngine()
-        e.resize(width: 160, height: 160)
         run(e, seconds: 4, make: { self.input($0) })
         run(e, seconds: 2.5, from: 4, make: { self.input($0, quiet: true) })
         run(e, seconds: 50, from: 6.5, make: { self.input($0) })
@@ -227,54 +270,103 @@ final class VisualizerTests: XCTestCase {
         XCTAssertEqual(e.mode, .tunnel)
     }
 
-    func testFrameTimesAreFastEnough() {
-        for size in [360, 440] {
-            for mode in VizEngine.Mode.allCases {
-                let e = VizEngine()
-                e.mode = mode
-                e.resize(width: size, height: size)
-                run(e, seconds: 0.5, make: { self.input($0) })                 // warm up
-                var times: [Double] = []
-                var t = 0.5
-                for _ in 0..<180 {
-                    let start = CFAbsoluteTimeGetCurrent()
-                    autoreleasepool { _ = e.render(time: t, dt: 1 / 60, input: input(t)) }
-                    times.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
-                    t += 1 / 60
-                }
-                times.sort()
-                let avg = times.reduce(0, +) / Double(times.count), p95 = times[Int(Double(times.count) * 0.95)]
-                metric("viz.frame_ms \(mode.name) \(size)px avg=\(String(format: "%.2f", avg)) p95=\(String(format: "%.2f", p95))")
-                // 440px is the most the phone ever draws (see VizUIView). 60 fps = 16.7 ms per frame:
-                // average under half of that, and 95% of frames inside one frame
-                XCTAssertLessThan(avg, 8.3, "\(mode.name) at \(size)px: average frame leaves room for 60 fps")
-                XCTAssertLessThan(p95, 16.7, "\(mode.name) at \(size)px: 95% of frames fit in one 60 fps frame")
-            }
+    func testShadersCompile() {
+        XCTAssertNotNil(VizRenderer(), "the Metal shaders compile on this device")
+    }
+
+    func testEveryStyleDrawsAndReacts() throws {
+        guard let r = VizRenderer() else { throw XCTSkip("no Metal device") }
+        for mode in VizEngine.Mode.allCases {
+            let e = VizEngine()
+            e.mode = mode
+            let live = render(e, r, seconds: 2.5, sampleEvery: 3, make: { self.input($0) }).suffix(30)
+            let idle = render(e, r, seconds: 2.5, from: 2.5, sampleEvery: 3, make: { _ in VizInput(levels: [], wave: [], live: false) }).suffix(30)
+            let lv = variance(Array(live)), lb = live.reduce(0, +) / Double(live.count), ib = idle.last ?? 0
+            metric("viz.\(mode.name) brightness=\(String(format: "%.0f", lb)) pulse_live=\(String(format: "%.1f", lv)) idle_brightness=\(String(format: "%.1f", ib))")
+            XCTAssertGreaterThan(lb, 5, "\(mode.name): lights up with music")
+            XCTAssertLessThan(lb, 200, "\(mode.name): not blown out to white")
+            XCTAssertGreaterThan(lv, 0.5, "\(mode.name): moves with the beat")
+            XCTAssertGreaterThan(ib, 0.3, "\(mode.name): idle picture isn't black")
         }
     }
 
-    func testNoMemoryGrowthOverALongSession() {
+    func testMirrorAndThemesChangeThePicture() throws {
+        guard let r = VizRenderer(), let out = r.makeOutput(width: 128, height: 128) else { throw XCTSkip("no Metal device") }
+        func frame(_ look: VizLook) -> [UInt8] {
+            let e = VizEngine()
+            e.look = look
+            for i in 0..<60 {
+                e.update(time: Double(i) / 60, dt: 1 / 60, input: input(Double(i) / 60))
+                let done = DispatchSemaphore(value: 0)
+                r.draw(engine: e, width: 128, height: 128, output: out, completion: { done.signal() })
+                done.wait()
+            }
+            return r.readBack(out)
+        }
+        let base = frame(VizLook()), fire = frame(VizLook(theme: .fire)), mirror = frame(VizLook(mirror: true))
+        func diff(_ a: [UInt8], _ b: [UInt8]) -> Double {
+            var s = 0.0
+            for i in stride(from: 0, to: min(a.count, b.count), by: 4) { s += abs(Double(a[i]) - Double(b[i])) + abs(Double(a[i + 2]) - Double(b[i + 2])) }
+            return s / Double(a.count / 4)
+        }
+        XCTAssertGreaterThan(diff(base, fire), 3, "Fire theme recolors it")
+        XCTAssertGreaterThan(diff(base, mirror), 3, "the kaleidoscope mirror changes the picture")
+    }
+
+    func testFullResolutionFrameTimes() throws {
+        guard let r = VizRenderer() else { throw XCTSkip("no Metal device") }
+        // an iPhone 15/16 screen at full resolution (the old visualizer drew 440 px tall and stretched it)
+        let w = 1179, h = 2556
+        for mode in VizEngine.Mode.allCases {
+            let e = VizEngine()
+            e.mode = mode
+            render(e, r, size: (w, h), seconds: 0.25, make: { self.input($0) })      // warm up
+            r.resetTimes()
+            var cpu: [Double] = []
+            var t = 0.25
+            for _ in 0..<90 {
+                let c0 = CFAbsoluteTimeGetCurrent()
+                e.update(time: t, dt: 1 / 60, input: input(t))
+                cpu.append((CFAbsoluteTimeGetCurrent() - c0) * 1000)
+                let out = r.makeOutput(width: w, height: h)!
+                let done = DispatchSemaphore(value: 0)
+                r.draw(engine: e, width: w, height: h, output: out, completion: { done.signal() })
+                done.wait()
+                t += 1 / 60
+            }
+            let gpu = r.recentGpuMs().sorted()
+            let avg = gpu.reduce(0, +) / Double(max(1, gpu.count)), p95 = gpu.isEmpty ? 0 : gpu[Int(Double(gpu.count) * 0.95)]
+            let cpuAvg = cpu.reduce(0, +) / Double(cpu.count)
+            metric("viz.gpu_ms \(mode.name) \(w)x\(h) avg=\(String(format: "%.2f", avg)) p95=\(String(format: "%.2f", p95)) cpu=\(String(format: "%.3f", cpuAvg))ms")
+            XCTAssertLessThan(avg, 8.3, "\(mode.name): full-screen frame leaves room for 60 fps")
+            XCTAssertLessThan(p95, 16.7, "\(mode.name): 95% of frames fit in one 60 fps frame")
+            XCTAssertLessThan(cpuAvg, 1.0, "\(mode.name): barely touches the processor (cooler phone)")
+        }
+    }
+
+    func testNoMemoryGrowthOverALongSession() throws {
+        guard let r = VizRenderer() else { throw XCTSkip("no Metal device") }
         let e = VizEngine()
-        e.resize(width: 400, height: 400)
-        run(e, seconds: 2, make: { self.input($0) })
+        render(e, r, size: (400, 800), seconds: 1, make: { self.input($0) })
         let before = residentMB()
         for (i, mode) in VizEngine.Mode.allCases.enumerated() {
             e.mode = mode
-            run(e, seconds: 8, from: 2 + Double(i) * 8, make: { self.input($0) })
+            render(e, r, size: (400, 800), seconds: 3, from: 1 + Double(i) * 3, make: { self.input($0) })
         }
         let after = residentMB()
-        metric("viz.memory before=\(String(format: "%.1f", before))MB after=\(String(format: "%.1f", after))MB over 1920 frames")
+        metric("viz.memory before=\(String(format: "%.1f", before))MB after=\(String(format: "%.1f", after))MB over \(VizEngine.Mode.allCases.count * 180) frames")
         XCTAssertLessThan(after - before, 15)
     }
 
-    func testResizeKeepsWorking() {
+    func testResizeKeepsWorking() throws {
+        guard let r = VizRenderer() else { throw XCTSkip("no Metal device") }
         let e = VizEngine()
-        e.resize(width: 390, height: 390)
-        run(e, seconds: 0.5, make: { self.input($0) })
-        e.resize(width: 844, height: 390)
-        let img = e.render(time: 1, dt: 1 / 60, input: input(1))
-        XCTAssertEqual(img?.width, 844)
-        XCTAssertEqual(img?.height, 390)
+        render(e, r, size: (390, 390), seconds: 0.2, make: { self.input($0) })
+        XCTAssertEqual(r.size.0, 390)
+        let b = render(e, r, size: (844, 390), seconds: 0.5, sampleEvery: 10, make: { self.input($0) })
+        XCTAssertEqual(r.size.0, 844)
+        XCTAssertEqual(r.size.1, 390)
+        XCTAssertGreaterThan(b.last ?? 0, 1)
     }
 
     private func residentMB() -> Double {
