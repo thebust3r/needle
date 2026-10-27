@@ -513,3 +513,28 @@ body.viz-full #np { visibility: hidden; }
 @keyframes pad-miss { 0%, 100% { transform: translateX(0); } 30% { transform: translateX(-3px); } 60% { transform: translateX(3px); } }
 @media (prefers-reduced-motion: reduce) { .np-pads button.hit, .np-pads button.miss { animation: none; } }
 .screw-panel .sp-live { font-size: 13px !important; line-height: 1.4; margin: 12px 0 0 !important; white-space: normal !important; color: #fff; opacity: .85; }
+
+/* the turntable (Live chop mode) */
+.vinyl { position: absolute; inset: 0; display: grid; place-items: center; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: grab; }
+.vinyl[hidden] { display: none; }
+.vinyl.held { cursor: grabbing; }
+.np-stage.turntable .np-art, .np-stage.turntable .np-viz, .np-stage.turntable .viz-ui, .np-stage.turntable .viz-flash { visibility: hidden; }
+.vinyl-disc { position: relative; width: 94%; aspect-ratio: 1; border-radius: 50%; will-change: transform;
+  background:
+    radial-gradient(circle, transparent 0 31%, rgba(255,255,255,.05) 31.4%, transparent 32.5%),
+    repeating-radial-gradient(circle, #0c0c0e 0 1.1px, #17171b 1.4px 2.3px),
+    #111;
+  box-shadow: 0 18px 40px rgba(0,0,0,.55), inset 0 0 0 2px #050506, inset 0 0 0 7px #1c1c20; }
+.vinyl-disc::after { content: ""; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  background: conic-gradient(from 20deg, transparent 0 8%, rgba(255,255,255,.10) 12%, transparent 18% 50%, rgba(255,255,255,.07) 58%, transparent 64%); }
+.vinyl-label { position: absolute; left: 32%; top: 32%; width: 36%; height: 36%; border-radius: 50%; object-fit: cover;
+  box-shadow: 0 0 0 3px rgba(0,0,0,.6); pointer-events: none; }
+.vinyl-hole { position: absolute; left: calc(50% - 4px); top: calc(50% - 4px); width: 8px; height: 8px; border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #ddd, #888 60%, #444); box-shadow: 0 0 0 2px rgba(0,0,0,.5); pointer-events: none; }
+.tonearm { position: absolute; right: -4%; top: -6%; width: 22%; height: 70%; pointer-events: none; filter: drop-shadow(0 6px 8px rgba(0,0,0,.5));
+  transform-origin: 66% 11%; transform: rotate(3deg); transition: transform .4s ease; }
+.vinyl.held .tonearm { transform: rotate(5deg); }
+.tonearm circle { fill: #c9ccd2; } .tonearm circle.pivot { fill: #6b6f78; }
+.tonearm path { fill: none; stroke: #d9dce2; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+.tonearm rect { fill: #2a2c31; stroke: #8a8e96; stroke-width: 1.5; }
+@media (prefers-reduced-motion: reduce) { .tonearm { transition: none; } }

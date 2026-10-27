@@ -79,6 +79,10 @@
     <div class="np-stage" id="np-stage" role="button" tabindex="0" aria-label="Album art. Tap to show the visualizer">
       <img class="np-art" alt="">
       <canvas id="viz" class="np-viz" aria-hidden="true"></canvas>
+      <div class="vinyl" id="vinyl" hidden role="slider" aria-label="Record. Drag around it to scratch, hold it to stop, spin it to skip" aria-valuetext="">
+        <div class="vinyl-disc"><img class="vinyl-label" alt=""><span class="vinyl-hole"></span></div>
+        <svg class="tonearm" viewBox="0 0 60 200" aria-hidden="true"><circle cx="40" cy="22" r="14"/><circle cx="40" cy="22" r="5" class="pivot"/><path d="M40 22 L36 150 L18 178"/><rect x="8" y="170" width="20" height="26" rx="3" transform="rotate(28 18 183)"/></svg>
+      </div>
       <div class="viz-flash" aria-hidden="true"></div>
       <div class="viz-ui">
         <button id="viz-mode" class="viz-chip" aria-label="Change visualizer style">Auto</button>
@@ -148,6 +152,7 @@
 <script src="viz.js"></script>
 <script src="viz-ui.js"></script>
 <script src="lyrics.js"></script>
+<script src="turntable.js"></script>
 <script src="import.js"></script>
 <script src="mixes.js"></script>
 </body>

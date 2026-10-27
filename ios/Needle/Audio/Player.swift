@@ -194,6 +194,27 @@ final class Player {
     /// Chops push the song back; seconds of the song you're behind by (0 when chops are off).
     var chopLag: Double { ScrewSettings.shared.status.lag }
 
+    // MARK: the turntable (Live chops)
+
+    /// Hand on the record: it stops.
+    func scratchDown() { ScrewSettings.shared.scratch(down: true) }
+    /// The record has been turned this far since you grabbed it, in seconds of the song as you hear it.
+    func scratchMove(_ heardSeconds: Double) { ScrewSettings.shared.scratch(offset: heardSeconds) }
+    /// Let go: the motor brings it back up to speed. If it was spun past what's in memory, skip through the song.
+    func scratchUp() {
+        let before = ScrewSettings.shared.scratchResult.seq
+        ScrewSettings.shared.scratch(up: true)
+        Task { @MainActor in
+            for _ in 0..<40 {
+                try? await Task.sleep(for: .milliseconds(25))
+                let r = ScrewSettings.shared.scratchResult
+                guard r.seq != before else { continue }
+                if abs(r.seconds) > 0.3 { seek(to: currentTime + r.seconds) }
+                return
+            }
+        }
+    }
+
     /// A jump (skip, seek, new song): chops start fresh, no carried-over time.
     private func freshChops() {
         ScrewSettings.shared.requestReset()

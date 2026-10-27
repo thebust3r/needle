@@ -227,6 +227,7 @@ const audio = {
     // chops run on the audio thread, between the EQ and the meters
     const onChopMessage = (d) => {
       if ("fired" in d) return livePads.fired(d.fired, d.ok);
+      if ("scratched" in d) return turntable.scratched(d.scratched);
       screw.stats = d; this.lag = d.lag || 0; livePads.status();
     };
     if (this.ctx.audioWorklet) {
@@ -253,7 +254,7 @@ const audio = {
       sp.onaudioprocess = (e) => {
         const inp = e.inputBuffer, out = e.outputBuffer, n = inp.length, chans = [];
         for (let c = 0; c < out.numberOfChannels; c++) { const o = out.getChannelData(c); o.set(inp.getChannelData(Math.min(c, inp.numberOfChannels - 1))); chans.push(o); }
-        if (amount !== "off" || chopper.active || chopper.lag > 0 || chopper.frozen) {
+        if (amount !== "off" || chopper.active || chopper.lag > 0 || chopper.frozen || chopper.scr) {
           // same 128-sample steps as the audio thread, so beats and cuts line up the same way
           for (let i = 0; i < n; i += 128) chopper.process(chans.map((ch) => ch.subarray(i, i + 128)), Math.min(128, n - i), amount);
         }
@@ -281,6 +282,8 @@ const audio = {
   /** Live mode: play a chop move now. */
   trigger(move, hold) { if (this.chop) this.chop.port.postMessage({ trigger: move, hold: !!hold }); },
   release() { if (this.chop) this.chop.port.postMessage({ release: true }); },
+  /** The turntable: "down" (hand on the record), "move" (turned by `offset` seconds since), "up" (let go). */
+  scratch(what, offset) { if (this.chop) this.chop.port.postMessage({ scratch: what, offset }); },
   connect(el) {
     this.ensure();
     if (!this.ctx) return false;
@@ -660,6 +663,7 @@ const ui = {
     heart.classList.toggle("on", !!t?.starred);
     $("#np-heart use").setAttribute("href", t?.starred ? "#i-heartfill" : "#i-heart");
     livePads.show(screw.chops === "live");
+    if (typeof turntable !== "undefined") turntable.show(screw.chops === "live" && !!player.current);
     const sc = $("#np-screw"), lab = screw.label();
     sc.classList.toggle("on", !!lab);
     $("span", sc).textContent = lab;
@@ -1294,7 +1298,7 @@ function openScrew() {
         `<button data-speed="${k}" class="${screw.speed === k ? "on" : ""}"><b>${n}</b><span>${k === "off" ? "Normal" : `${Math.round(r * 100)}% · ${d}`}</span></button>`).join("")}</div>
       <small>CHOPS</small><div class="sp-row">${[["off", "None"], ["light", "Every few bars"], ["heavy", "Every bar"], ["live", "You tap them"]].map(([k, d]) =>
         `<button data-chops="${k}" class="${screw.chops === k ? "on" : ""}"><b>${k[0].toUpperCase() + k.slice(1)}</b><span>${d}</span></button>`).join("")}</div>
-      ${screw.chops === "live" ? `<p class="sp-live">Pads show up under the song on Now Playing. Tap one and it cuts back right away, in time. Hold <b>Repeat</b> to loop a beat.${matchMedia("(pointer: fine)").matches ? " Keys 1–5 work too." : ""}</p>` : ""}
+      ${screw.chops === "live" ? `<p class="sp-live">The cover turns into a record: drag around it to scratch, hold it to stop, spin it hard to skip. Pads show up under the song: tap one and it cuts back right away, in time. Hold <b>Repeat</b> to loop a beat.${matchMedia("(pointer: fine)").matches ? " Keys 1–5 work too." : ""}</p>` : ""}
       ${screw.chops !== "off" ? `<p class="sp-status" id="sp-status"></p>` : ""}
       <p class="sp-note">Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Needle has found the rhythm.</p>
       <button class="sp-done">Done</button></div>`;
@@ -1364,7 +1368,7 @@ seek.onchange = () => { player.seek((seek.value / 1000) * player.duration()); sc
   const np = $("#np");
   let sx = 0, sy = 0, dragging = false, onArt = false;
   np.addEventListener("touchstart", (e) => {
-    if (e.target.closest("input, .controls, .np-bottom")) return;
+    if (e.target.closest("input, .controls, .np-bottom, .vinyl, .np-pads")) return;
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; dragging = true; onArt = !!e.target.closest(".np-stage") && !e.target.closest(".viz-ui");
   }, { passive: true });
   np.addEventListener("touchmove", (e) => {

@@ -1119,6 +1119,84 @@ final class ScrewTests: XCTestCase {
         XCTAssertTrue(ok, "then song B starts from its beginning")
     }
 
+    // MARK: the turntable
+
+    /// Runs `x` through a chopper in 128-sample blocks, calling `events` (at seconds) between blocks.
+    func runScratch(_ x: [Float], _ events: [(Double, (Chopper) -> Void)]) -> (Chopper, [Float]) {
+        let c = Chopper(sampleRate: sr, seed: 5)
+        c.prepare(channels: 1)
+        var out = x, e = 0, i = 0
+        while i < x.count {
+            while e < events.count, events[e].0 * sr <= Double(i) { events[e].1(c); e += 1 }
+            let n = min(128, x.count - i)
+            out.withUnsafeMutableBufferPointer { p in c.process([(p.baseAddress! + i, 1)], frames: n, amount: .live) }
+            i += n
+        }
+        return (c, out)
+    }
+    func rms(_ a: [Float], _ s: Double, _ e: Double) -> Double {
+        let lo = Int(s * sr), hi = Int(e * sr)
+        var t = 0.0
+        for i in lo..<hi { t += Double(a[i] * a[i]) }
+        return (t / Double(hi - lo)).squareRoot()
+    }
+
+    func testTurntableHoldScratchLetGo() {
+        let x = beat(bpm: 84, seconds: 30, offset: 0.21)
+        // hold still: silent, no click
+        let (_, held) = runScratch(x, [(10, { $0.scratchDown() }), (11, { _ = $0.scratchUp() })])
+        XCTAssertLessThan(rms(held, 10.1, 10.9), rms(held, 9, 10) * 0.01, "holding the record still is silent")
+        var jump: Float = 0, music: Float = 0
+        for i in Int(9.98 * sr)..<Int(10.05 * sr) { jump = max(jump, abs(held[i] - held[i - 1])) }
+        for i in 1..<x.count { music = max(music, abs(x[i] - x[i - 1])) }
+        XCTAssertLessThanOrEqual(jump, music * 1.1, "grabbing it doesn't click")
+
+        // scratch back and forth around the grab point
+        var events: [(Double, (Chopper) -> Void)] = [(12, { $0.scratchDown() })]
+        var lowest = Double.infinity, highest = -Double.infinity, grab = 0.0
+        events.append((12.001, { c in grab = c.scr?.pos ?? 0 }))
+        for k in 1...60 {
+            events.append((12 + Double(k) / 60, { c in
+                c.scratchMove(0.25 * self.sr * sin(2 * .pi * 2 * Double(k) / 60))
+                if let p = c.scr?.pos { lowest = min(lowest, p); highest = max(highest, p) }
+            }))
+        }
+        var over = 1.0
+        events.append((13.02, { c in over = c.scratchUp() }))
+        let (_, scratched) = runScratch(x, events)
+        metric("screw.scratch span=\(String(format: "%.2f", (lowest - grab) / sr))..\(String(format: "%.2f", (highest - grab) / sr))s")
+        XCTAssertLessThan(lowest, grab - 0.1 * sr, "scratches backwards")
+        XCTAssertGreaterThan(highest, grab + 0.1 * sr, "and forwards")
+        XCTAssertGreaterThan(rms(scratched, 12.05, 13), 0.02, "and you hear it")
+        XCTAssertEqual(over, 0, "a small scratch isn't a skip")
+
+        // let go: back to the song within 0.4 s, from that spot (you're behind by the time you held it)
+        let (c, out) = runScratch(x, [(15, { $0.scratchDown() }), (15.5, { $0.scratchMove(-0.5 * self.sr) }), (16, { _ = $0.scratchUp() })])
+        let lag = c.lag, t0 = Int(16.4 * sr)
+        var same = true
+        var t = 0
+        while t < Int(0.5 * sr) { if abs(out[t0 + t] - x[t0 + t - lag]) > 1e-6 { same = false; break }; t += 11 }
+        metric("screw.scratch behind=\(String(format: "%.2f", Double(lag) / sr))s")
+        XCTAssertTrue(same, "back to playing the song normally within 0.4 s")
+        XCTAssertEqual(Double(lag) / sr, 1.5, accuracy: 0.25, "behind by the time pulled back and held")
+    }
+
+    func testTurntableFlingSkips() {
+        let x = beat(bpm: 84, seconds: 20, offset: 0.21)
+        var over = 0.0
+        _ = runScratch(x, [(15, { $0.scratchDown() }), (15.2, { $0.scratchMove(6 * self.sr) }), (15.25, { c in over = c.scratchUp() })])
+        XCTAssertEqual(over / sr, 5.75, accuracy: 0.6, "spinning it way forward reports how far to skip")
+    }
+
+    func testTurntableMessagesGoThroughTheSharedSettings() {
+        let s = ScrewSettings()
+        s.scratch(down: true); s.scratch(offset: 0.3); s.scratch(offset: 0.5); s.scratch(up: true)
+        let t = s.takeScratch()
+        XCTAssertTrue(t.down); XCTAssertEqual(t.offset, 0.5); XCTAssertTrue(t.up)
+        let again = s.takeScratch()
+        XCTAssertFalse(again.down); XCTAssertNil(again.offset); XCTAssertFalse(again.up)
+    }
+
     func testLiveTapsGoThroughTheSharedSettings() {
         let s = ScrewSettings()
         s.tap(.loop, hold: true)

@@ -136,6 +136,28 @@ final class ScrewSettings: @unchecked Sendable {
         return r
     }
 
+    // the turntable: hand on/off the record and how far it's been turned (heard seconds), plus the answer
+    private var _scratchDown = false, _scratchUp = false, _scratchOffset: Double?
+    private var _scratchResult: (seq: Int, seconds: Double) = (0, 0)
+    func scratch(down: Bool = false, offset: Double? = nil, up: Bool = false) {
+        os_unfair_lock_lock(&lock)
+        if down { _scratchDown = true; _scratchUp = false; _scratchOffset = nil }
+        if let offset { _scratchOffset = offset }
+        if up { _scratchUp = true }
+        os_unfair_lock_unlock(&lock)
+    }
+    func takeScratch() -> (down: Bool, offset: Double?, up: Bool) {
+        os_unfair_lock_lock(&lock); defer { os_unfair_lock_unlock(&lock) }
+        let r = (_scratchDown, _scratchOffset, _scratchUp)
+        _scratchDown = false; _scratchOffset = nil; _scratchUp = false
+        return r
+    }
+    /// How far past the ends of the memory the record was spun (song seconds), for skipping through the song.
+    var scratchResult: (seq: Int, seconds: Double) {
+        get { os_unfair_lock_lock(&lock); defer { os_unfair_lock_unlock(&lock) }; return _scratchResult }
+        set { os_unfair_lock_lock(&lock); _scratchResult = newValue; os_unfair_lock_unlock(&lock) }
+    }
+
     private var _status = ScrewStatus()
     /// Written by the audio thread about once a second, read by the UI.
     var status: ScrewStatus {
@@ -427,6 +449,10 @@ final class Chopper {
     private(set) var history: [Chop] = []
     private(set) var count = 0
 
+    /// The turntable: your hand on the record. See scratchDown().
+    struct Scratch { var hold = true; var pos: Double; var grab: Double; var target: Double; var vel = 1.0; var g = 1.0 }
+    private(set) var scr: Scratch?
+
     var lag: Int { wp - rp }
 
     init(sampleRate: Double, seed: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000), seconds: Double = 90) {
@@ -446,7 +472,7 @@ final class Chopper {
 
     func reset() {
         tracker.reset()
-        wp = 0; rp = 0; oc = 0; beatsSeen = 0; lastBeat = -1; cooldownUntil = 0; active = nil; holding = false
+        wp = 0; rp = 0; oc = 0; beatsSeen = 0; lastBeat = -1; cooldownUntil = 0; active = nil; holding = false; scr = nil
         history.removeAll(keepingCapacity: true); count = 0
     }
 
@@ -471,7 +497,8 @@ final class Chopper {
         tracker.feed(first.0, count: frames, stride: first.1)
         wp += frames
         // 2. plan the next chop on an upcoming beat
-        if active == nil, !amount.picks.isEmpty { plan(frames: frames, amount: amount) }
+        if active == nil, scr == nil, !amount.picks.isEmpty { plan(frames: frames, amount: amount) }
+        if scr != nil { scratchOut(channels, frames: frames); return }
         // holding the loop pad: one more pass of the same beat just before the current one runs out
         if var a = active, a.move == .loop, holding, a.next >= a.jumps.count, a.end - oc < max(frames * 2, fade * 2) {
             let p0 = a.jumps[0].J
@@ -527,6 +554,62 @@ final class Chopper {
     private func update(_ c: Chop) {
         if let i = history.indices.last, let a = active, history[i].start == a.start { history[i] = c }
         active = c
+    }
+
+    // MARK: the turntable
+    // While you hold the record the playhead follows your hand (smoothed over ~8 ms, like the platter's weight), so
+    // moving it back and forth plays the song backwards and forwards at that speed: scratching. Let go and the motor
+    // brings it back up to speed (~0.3 s) from wherever it is. You can't move past the newest audio or further back
+    // than the memory; going past either is reported so the player can skip through the song. Same as the web.
+
+    func scratchDown() {
+        if var s = scr { s.hold = true; s.grab = s.pos; s.target = s.pos; scr = s; return }
+        active = nil; holding = false                          // grabbing the record stops any chop
+        scr = Scratch(pos: Double(rp), grab: Double(rp), target: Double(rp))
+    }
+    /// `offset`: how far the record has been turned since you grabbed it, in samples (positive = forward).
+    func scratchMove(_ offset: Double) { if var s = scr, s.hold { s.target = s.grab + offset; scr = s } }
+    /// Let go. Returns how far past the ends you tried to go, in samples.
+    func scratchUp() -> Double {
+        guard var s = scr, s.hold else { return 0 }
+        s.hold = false; scr = s
+        let lo = scratchLow, hi = Double(wp - 2)
+        return s.target > hi ? s.target - hi : s.target < lo ? s.target - lo : 0
+    }
+    private var scratchLow: Double { Double(max(0, wp - cap + 8192 + 4096)) }
+
+    private func scratchOut(_ channels: [(UnsafeMutablePointer<Float>, Int)], frames: Int) {
+        guard var s = scr else { return }
+        let sr = sampleRate
+        let follow = 1 - exp(-1 / (0.008 * sr)), motor = 1 - exp(-1 / (0.06 * sr)), loud = 1 - exp(-1 / (0.004 * sr))
+        let lo = scratchLow, hi = Double(wp - 2)
+        var done = -1
+        for i in 0..<frames {
+            let before = s.pos
+            if s.hold { s.pos += (max(lo, min(hi, s.target)) - s.pos) * follow } else { s.vel += (1 - s.vel) * motor; s.pos += s.vel }
+            s.pos = max(lo, min(hi, s.pos))
+            if s.hold { s.vel = s.pos - before }
+            // like a real stylus: the sound is as strong as the record is moving (silent when you hold it still)
+            s.g += (min(1, abs(s.vel)) - s.g) * loud
+            let k = Int(s.pos.rounded(.down)), fr = Float(s.pos - Double(k)), a = k % cap, b = (k + 1) % cap
+            for (c, (p, stride)) in channels.enumerated() {
+                let r0 = rings[c][a], r1 = rings[c][b]
+                p[i * stride] = (r0 + (r1 - r0) * fr) * Float(s.g)
+            }
+            oc += 1
+            if !s.hold, abs(s.vel - 1) < 0.004, s.g > 0.99 { done = i; break }      // back up to speed
+        }
+        if done >= 0 {
+            rp = Int(s.pos.rounded()) + 1
+            scr = nil
+            for i in (done + 1)..<frames {
+                for (c, (p, stride)) in channels.enumerated() { p[i * stride] = rings[c][rp % cap] }
+                rp += 1; oc += 1
+            }
+        } else {
+            scr = s
+            rp = max(0, Int(s.pos.rounded(.down)))
+        }
     }
 
     /// A move as jumps for the playhead, starting at `at` (samples played).

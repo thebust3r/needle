@@ -47,7 +47,7 @@ struct ScrewSheet: View {
                 }
             }
             if player.chops == .live {
-                Text("Pads show up under the song on Now Playing. Tap one and it cuts back right away, in time. Hold **Repeat** to loop a beat.")
+                Text("The cover turns into a record: drag around it to scratch, hold it to stop, spin it hard to skip. Pads show up under the song: tap one and it cuts back right away, in time. Hold **Repeat** to loop a beat.")
                     .font(.footnote).foregroundStyle(.white.opacity(0.85))
             }
             if player.chops != .off {

@@ -142,7 +142,18 @@ struct NowPlayingView: View {
     private var vizShowing: Bool { viz.on && !lyricsOn }
 
     /// Album art. Tap it to flip to the visualizer and back; swipe sideways to skip.
+    @ViewBuilder
     private func artwork(_ size: CGFloat) -> some View {
+        if player.chops == .live {
+            // Live chops: the cover becomes a record you can scratch
+            TurntableView(size: size)
+                .transition(.scale(scale: 0.9).combined(with: .opacity))
+        } else {
+            cover(size)
+        }
+    }
+
+    private func cover(_ size: CGFloat) -> some View {
         ZStack {
             ArtworkView(track: player.current, size: size, corner: 16)
                 .opacity(viz.on ? 0 : 1)

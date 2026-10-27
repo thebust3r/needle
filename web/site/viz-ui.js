@@ -73,6 +73,7 @@ const vizUI = (() => {
   stage.addEventListener("pointerdown", (e) => { downX = e.clientX; downY = e.clientY; moved = false; });
   stage.addEventListener("pointermove", (e) => { if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 12) moved = true; });
   stage.addEventListener("click", (e) => {
+    if (stage.classList.contains("turntable")) return;     // Live mode: the cover is a record
     if (e.target.closest(".viz-ui") || moved) return;
     toggle();
   });

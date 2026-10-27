@@ -99,6 +99,34 @@ async def main():
         await pg.wait_for_timeout(1500)
         hist = await pg.evaluate("JSON.stringify(livePads.log)")
         check("holding Repeat loops the beat", '["loop",true]' in hist, hist)
+        # the turntable: in Live mode the cover is a record you can scratch
+        check("Live mode turns the cover into a record", await pg.is_visible("#vinyl") and not await pg.is_visible(".np-art"))
+        box = await pg.locator("#vinyl").bounding_box()
+        cx, cy, r = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, box["width"] * 0.4
+        import math
+        async def arc(a0, a1, steps, ms):
+            for k in range(steps + 1):
+                a = math.radians(a0 + (a1 - a0) * k / steps)
+                await pg.mouse.move(cx + r * math.cos(a), cy + r * math.sin(a))
+                await pg.wait_for_timeout(ms)
+        lag0 = await pg.evaluate("audio.lag")
+        await pg.mouse.move(cx + r, cy)
+        await pg.mouse.down()
+        await pg.wait_for_timeout(600)                       # holding it: stopped
+        await arc(0, -60, 8, 30); await arc(-60, 0, 8, 30); await arc(0, -60, 8, 30)     # wicka wicka
+        await pg.screenshot(path=os.path.join(SHOTS, "screw-6-turntable.png"))
+        await pg.mouse.up()
+        await pg.wait_for_timeout(1500)
+        lag1 = await pg.evaluate("audio.lag")
+        check("hold + scratch: the song waits for you, then picks up from there", lag1 - lag0 > 0.8, f"{lag0:.2f} -> {lag1:.2f} s behind")
+        t_before = await pg.evaluate("player.time()")
+        await pg.mouse.move(cx + r, cy); await pg.mouse.down()
+        await arc(0, 300, 10, 8)                             # a hard forward spin
+        await pg.mouse.up()
+        await pg.wait_for_timeout(2500)
+        t_after = await pg.evaluate("player.time()")
+        check("spinning it hard forward skips ahead in the song", t_after - t_before > 3, f"{t_before:.1f} -> {t_after:.1f} s")
+
         # chops push the rest of the song back: the time shown is what you hear, and the song plays out before the next
         await pg.evaluate("player.seek(20)")
         await pg.wait_for_function("screw.stats && screw.stats.confidence > 0.15 && player.time() > 24", timeout=20000)
