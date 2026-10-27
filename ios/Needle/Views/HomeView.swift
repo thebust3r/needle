@@ -196,7 +196,7 @@ struct HomeHeader: View {
                         .font(.title3.weight(.semibold).monospacedDigit())
                         .contentTransition(.numericText())
                     if weather.showWeather, let w = weather.now {
-                        Text("· \(w.words) in \(w.place)").font(.subheadline).foregroundStyle(Theme.secondary).lineLimit(1)
+                        Text("· \(w.words)").font(.subheadline).foregroundStyle(Theme.secondary).lineLimit(1)
                     }
                     Spacer()
                     if let shuffle {

@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 SITE = sys.argv[1]
 random.seed(4)
 ARTISTS = ["Neon Harbor", "Velvet Static", "Paper Moons", "Low Orbit", "The Quiet Fires"]
+GENRES = ["Synthwave", "Indie", "Dream Pop", "Synthwave", "Folk"]
 WORDS = ["Midnight", "Glass", "Summer", "Echo", "Drive", "Gold", "Hollow", "Satellite", "Rain", "Ember", "Signal", "Coast"]
 albums, songs = [], {}
 for ai in range(14):
@@ -17,9 +18,10 @@ for ai in range(14):
     for t in range(1, random.randint(7, 11)):
         sid = f"s{ai}_{t}"
         s = {"id": sid, "title": f"{random.choice(WORDS)} {random.choice(['Lights','Waves','Heart','Lines','Days'])}", "album": name, "artist": art,
-             "albumId": aid, "artistId": f"ar{ai % 5}", "track": t, "discNumber": 1, "coverArt": aid, "suffix": "wav", "duration": 30, "year": 2015 + ai % 9}
+             "albumId": aid, "artistId": f"ar{ai % 5}", "track": t, "discNumber": 1, "coverArt": aid, "suffix": "wav", "duration": 30, "year": 2015 + ai % 9,
+             "genre": GENRES[ai % 5], "playCount": (ai * 7 + t * 3) % 15}
         songs[sid] = s; tracks.append(s)
-    albums.append({"id": aid, "name": name, "artist": art, "artistId": f"ar{ai % 5}", "coverArt": aid, "songCount": len(tracks), "year": 2015 + ai % 9, "genre": "Indie", "song": tracks})
+    albums.append({"id": aid, "name": name, "artist": art, "artistId": f"ar{ai % 5}", "coverArt": aid, "songCount": len(tracks), "year": 2015 + ai % 9, "genre": GENRES[ai % 5], "song": tracks})
 
 def cover_png(aid, size):
     random.seed(aid)
@@ -49,6 +51,7 @@ def tone_wav(seed):
     w.writeframes(bytes(frames)); w.close(); return buf.getvalue()
 
 WAVS = {}
+CREATED = []
 HELPER = os.environ.get("HELPER_URL")          # forward /helper/ to a running helper (import tests)
 REST_FWD = os.environ.get("REST_FORWARD")       # playlists live in the helper's fake Navidrome
 from urllib.request import Request as _Req, urlopen as _open
@@ -81,6 +84,8 @@ class H(SimpleHTTPRequestHandler):
         u = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path.startswith("/helper/"):
             return self.forward(HELPER or "http://127.0.0.1:1", "GET")
+        if u.path == "/_created":
+            b = json.dumps(CREATED).encode(); self.send_response(200); self.end_headers(); return self.wfile.write(b)
         if REST_FWD and u.path in ("/rest/getPlaylist", "/rest/getPlaylists"):
             return self.forward(REST_FWD, "GET")
         if u.path.startswith("/lrclib/api/"):
@@ -113,8 +118,18 @@ class H(SimpleHTTPRequestHandler):
         if ep == "search3":
             ql = q.get("query", "").lower()
             return self.ok({"searchResult3": {"album": [strip(a) for a in albums if ql in a["name"].lower()], "song": [s for s in songs.values() if ql in s["title"].lower()][:20]}})
-        if ep == "getRandomSongs": return self.ok({"randomSongs": {"song": random.sample(list(songs.values()), 20)}})
-        if ep in ("getPlaylists", "getStarred2", "star", "unstar", "scrobble"): return self.ok({"playlists": {"playlist": []}} if ep == "getPlaylists" else {})
+        if ep == "getRandomSongs":
+            allv = list(songs.values()); return self.ok({"randomSongs": {"song": random.sample(allv, min(len(allv), int(q.get("size", 20))))}})
+        if ep == "getSongsByGenre":
+            return self.ok({"songsByGenre": {"song": [x for x in songs.values() if x["genre"] == q.get("genre")][:int(q.get("count", 10))]}})
+        if ep == "getArtistInfo2":
+            i = int(q["id"][2:])
+            return self.ok({"artistInfo2": {"biography": f'{ARTISTS[i]} is a band from somewhere &amp; elsewhere. <a href="https://last.fm">Read more on Last.fm</a>',
+                "largeImageUrl": "", "similarArtist": [{"id": f"ar{(i + 1) % 5}", "name": ARTISTS[(i + 1) % 5], "coverArt": f"al{(i + 1) % 5}"}]}})
+        if ep == "createPlaylist":
+            CREATED.append({k: v for k, v in parse_qs(u.query).items() if k in ("name", "songId")}); return self.ok({"playlist": {"id": "pl9", "name": q.get("name")}})
+        if ep == "getStarred2": return self.ok({"starred2": {"song": [songs["s2_1"], songs["s2_2"]], "album": []}})
+        if ep in ("getPlaylists", "star", "unstar", "scrobble"): return self.ok({"playlists": {"playlist": []}} if ep == "getPlaylists" else {})
         if ep == "getCoverArt":
             body = cover_png(q["id"], min(int(q.get("size", 300)), 600))
             self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "max-age=3600"); self.end_headers(); return self.wfile.write(body)

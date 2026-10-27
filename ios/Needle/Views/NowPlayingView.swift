@@ -68,7 +68,9 @@ struct NowPlayingView: View {
             guard let t = player.current else { return }
             async let p = ArtworkStore.shared.palette(for: t)
             async let img = ArtworkStore.shared.image(for: t, size: 160)
-            let (pp, ii) = await (p, img)
+            let (pp, raw) = await (p, img)
+            var ii: UIImage?
+            if let raw { ii = await Task.detached(priority: .userInitiated) { softBlur(raw) }.value }
             withAnimation(.easeInOut(duration: 0.8)) {
                 palette = pp
                 backdrop = ii
@@ -304,7 +306,7 @@ struct NowPlayingBackdrop: View {
     var body: some View {
         Color.clear
             .overlay {
-                Image(uiImage: Self.blurred(image))
+                Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .scaleEffect(drift ? 1.98 : 1.82)
@@ -323,21 +325,32 @@ struct NowPlayingBackdrop: View {
         withAnimation(.easeInOut(duration: 14).repeatForever(autoreverses: true)) { drift.toggle() }
     }
 
-    private static let cache = NSCache<UIImage, UIImage>()
-    private static let context = CIContext()
+    /// Kept for tests and older callers.
+    static func blurred(_ image: UIImage) -> UIImage { softBlur(image) }
+}
 
-    /// A soft, pre-blurred copy of the cover, made once per song.
-    static func blurred(_ image: UIImage) -> UIImage {
-        if let hit = cache.object(forKey: image) { return hit }
-        guard let cg = image.cgImage else { return image }
-        let ci = CIImage(cgImage: cg)
-        let out = ci.clampedToExtent()
-            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: max(ci.extent.width, ci.extent.height) / 9])
-            .cropped(to: ci.extent)
-        guard let res = context.createCGImage(out, from: ci.extent) else { return image }
-        let img = UIImage(cgImage: res)
-        cache.setObject(img, forKey: image)
-        return img
+private let blurCache = NSCache<UIImage, UIImage>()
+private let blurContext = CIContext(options: [.cacheIntermediates: false])
+
+/// A soft, pre-blurred copy of a cover, made once per song. Safe to call off the main thread.
+func softBlur(_ image: UIImage) -> UIImage {
+    if let hit = blurCache.object(forKey: image) { return hit }
+    guard let cg = image.cgImage else { return image }
+    let ci = CIImage(cgImage: cg)
+    let out = ci.clampedToExtent()
+        .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: max(ci.extent.width, ci.extent.height) / 9])
+        .cropped(to: ci.extent)
+    guard let res = blurContext.createCGImage(out, from: ci.extent) else { return image }
+    let img = UIImage(cgImage: res, scale: image.scale, orientation: image.imageOrientation)
+    blurCache.setObject(img, forKey: image)
+    return img
+}
+
+/// Sets up the blur machinery in the background at launch, so the first Now Playing opens without a hitch.
+func warmUpBlur() {
+    Task.detached(priority: .utility) {
+        let tiny = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { _ in }
+        _ = softBlur(tiny)
     }
 }
 

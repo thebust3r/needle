@@ -26,6 +26,8 @@ async def new_page(browser, reduced=False, w=390, h=844, viz=False, lyr=False):
         "localStorage.setItem('needle.cfg', JSON.stringify({user:'mason',pass:'pw'}));"
         f"localStorage.setItem('needle.vizOn', '{str(viz).lower()}'); localStorage.setItem('needle.lyricsOn', '{str(lyr).lower()}');"
         "localStorage.setItem('needle.vizAuto', 'false'); localStorage.setItem('needle.vizMode', '0'); }")
+    await ctx.route("https://*.open-meteo.com/**", lambda r: r.fulfill(status=200, content_type="application/json",
+                    body='{"current":{"temperature_2m":60,"weather_code":0,"is_day":1}}'))
     pg = await ctx.new_page()
     pg.want_viz = viz
     errs = []

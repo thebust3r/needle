@@ -258,7 +258,16 @@ const player = {
     this.playing = true;
     el.play().catch(() => { this.playing = false; ui.update(); });
     this.session();
+    this.resumeAt = 0;
+    if (window.onTrackStart) onTrackStart(t);
     ui.trackChanged();
+  },
+  /** Plays the restored song from where you left off (after reopening the app). */
+  resume() {
+    if (this.el) { if (this.el.paused) this.toggle(); return; }
+    if (!this.current) return;
+    audio.ensure();
+    this.start(this.resumeAt || 0);
   },
 
   drop(el) { if (el) { el.onpause = el.onended = el.ontimeupdate = el.onerror = null; el.pause(); el.removeAttribute("src"); el.load(); } },
@@ -285,7 +294,7 @@ const player = {
   },
 
   toggle() {
-    if (!this.el) return;
+    if (!this.el) return this.resume();
     audio.ensure();
     if (this.el.paused) { this.el.play().catch(() => {}); this.playing = true; }
     else { this.el.pause(); this.playing = false; }
@@ -297,8 +306,11 @@ const player = {
     if (this.el.currentTime > 3 || this.i === 0) this.el.currentTime = 0;
     else { this.i -= 1; this.start(); }
   },
-  seek(s) { if (this.el) this.el.currentTime = clamp(s, 0, (this.duration() || 0) - 0.5); },
-  time() { return this.el ? this.el.currentTime : 0; },
+  seek(s) {
+    if (this.el) this.el.currentTime = clamp(s, 0, (this.duration() || 0) - 0.5);
+    else { this.resumeAt = Math.max(0, s); ui.progress(); }
+  },
+  time() { return this.el ? this.el.currentTime : (this.resumeAt || 0); },
   duration() {
     const d = this.el?.duration;
     return isFinite(d) && d > 0 ? d : (this.current?.duration || 0);
@@ -426,7 +438,7 @@ const ui = {
     $("#mini b").textContent = t.title;
     $("#mini span").textContent = t.artist;
     $(".np-art").src = art;
-    $("#np .backdrop img").src = cover(t.coverArt, 160);
+    softBackdrop(t.coverArt);
     $("#np-title").textContent = t.title;
     $("#np-artist").textContent = t.artist;
     $("#np-album").textContent = t.album;
@@ -438,6 +450,7 @@ const ui = {
       r.setProperty("--np-bottom", p.bottom);
       r.setProperty("--np-accent", p.accent);
       if (window.Viz) Viz.setColor(p.accent);
+      if (window.onAlbumColor) onAlbumColor(p.accent);
     });
     this.update();
     $$(".row[data-id]").forEach((r) => r.classList.toggle("current", r.dataset.id === t.id));
@@ -1028,6 +1041,25 @@ const screens = {
 };
 const localTracks = [];
 
+/** The blurred cover behind Now Playing: shrunk to a few pixels once per song and scaled up,
+    which looks just as soft as a big blur but costs almost nothing to draw. */
+function softBackdrop(coverArt) {
+  const img = $("#np .backdrop img");
+  if (!coverArt) { img.removeAttribute("src"); return; }
+  const src = new Image();
+  src.crossOrigin = "anonymous";
+  src.onload = () => {
+    try {
+      const c = document.createElement("canvas");
+      c.width = c.height = 24;
+      const g = c.getContext("2d");
+      g.drawImage(src, 0, 0, 24, 24);
+      img.src = c.toDataURL("image/png");
+    } catch { img.src = src.src; }
+  };
+  src.src = cover(coverArt, 160);
+}
+
 function route() {
   routeToken++;
   screenTracks = [];
@@ -1036,7 +1068,7 @@ function route() {
   $("#dock").hidden = false;
   const [name, arg] = location.hash.replace(/^#\/?/, "").split("/");
   const screen = screens[name || "home"] && name !== "welcome" ? name || "home" : "home";
-  const tab = { albums: "library", artists: "library", playlists: "library", favorites: "library", files: "library", album: "library", artist: "library", playlist: "library", import: "library" }[screen] || screen;
+  const tab = { albums: "library", artists: "library", playlists: "library", favorites: "library", files: "library", album: "library", artist: "library", playlist: "library", import: "library", mix: "home" }[screen] || screen;
   $$("#tabs a").forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
   window.scrollTo(0, 0);
   screens[screen](arg && decodeURIComponent(arg));
@@ -1070,6 +1102,29 @@ seek.oninput = () => {
   $("#np-left").textContent = "-" + fmt(d - s);
 };
 seek.onchange = () => { player.seek((seek.value / 1000) * player.duration()); scrubbing = false; };
+
+// mini player: swipe left/right to skip, swipe up to open Now Playing
+(() => {
+  const mini = $("#mini");
+  let sx = 0, sy = 0, dx = 0, on = false, moved = false;
+  mini.addEventListener("touchstart", (e) => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; on = true; moved = false; }, { passive: true });
+  mini.addEventListener("touchmove", (e) => {
+    if (!on) return;
+    dx = e.touches[0].clientX - sx;
+    const dy = e.touches[0].clientY - sy;
+    if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) { moved = true; mini.classList.add("swiping"); mini.style.transform = `translateX(${dx * 0.35}px)`; }
+    if (dy < -40 && Math.abs(dy) > Math.abs(dx)) { on = false; moved = true; openNP(); }
+  }, { passive: true });
+  mini.addEventListener("touchend", () => {
+    if (!on) return;
+    on = false;
+    mini.classList.remove("swiping");
+    mini.style.transform = "";
+    if (dx < -60) player.skip(); else if (dx > 60) player.prev();
+    if (moved) mini.dataset.swiped = "1";
+  });
+  mini.addEventListener("click", (e) => { if (mini.dataset.swiped) { delete mini.dataset.swiped; e.stopImmediatePropagation(); } }, true);
+})();
 
 // swipe down to close Now Playing, swipe sideways on the art to skip
 (() => {
@@ -1124,5 +1179,9 @@ checkForUpdate();
 setInterval(checkForUpdate, 120000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) checkForUpdate(); });
 
-window.addEventListener("hashchange", route);
+window.addEventListener("hashchange", () => {
+  const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (document.startViewTransition && !calm && !document.hidden) document.startViewTransition(route);
+  else route();
+});
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", route); else route();   // after the add-on scripts load

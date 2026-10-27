@@ -38,6 +38,7 @@ final class AppModel {
     var helper: HelperClient { HelperClient(config: settings.config, address: settings.helperAddress) }
 
     init() {
+        warmUpBlur()
         let settings = self.settings, downloads = self.downloads, local = self.local
         player.client = { SubsonicClient(config: settings.config) }
         player.quality = { settings.quality }

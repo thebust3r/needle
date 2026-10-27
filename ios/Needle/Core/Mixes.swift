@@ -41,10 +41,10 @@ final class PlayHistory {
 
     func started(_ t: Track, now: Date = .now) {
         guard !t.isLocal else { return }
+        if let last = records.last, last.id == t.id, now.timeIntervalSince(last.at) < 20 { return }
         if let last = records.indices.last, records[last].listened == nil, let s = startedAt {
             records[last].listened = min(records[last].duration, now.timeIntervalSince(s))
         }
-        if let last = records.last, last.id == t.id, now.timeIntervalSince(last.at) < 20 { return }
         records.append(PlayRecord(id: t.id, title: t.title, artist: t.artist, album: t.album, albumId: t.albumId,
                                   coverArt: t.coverArt, duration: t.duration, at: now))
         startedAt = now
@@ -301,10 +301,20 @@ enum Mixer {
         return mixes
     }
 
-    /// Weighted random picks without repeats, at most 4 songs per artist and 2 per album,
+    /// Weighted random picks without repeats, spread across artists and albums (about 4 per artist, 2 per album,
+    /// more when the pool only has a few),
     /// then spread out so the same artist doesn't play twice in a row.
     static func pick(_ pool: [Song], count: Int, rng: inout SeededRandom, perAlbum: Int = 2,
                      score: (Song) -> Double) -> [Song] {
+        // spread songs across artists and albums, but let a genre with only a few artists still fill the mix
+        let artists = Set(pool.map { key($0.artist ?? "") }).count, albums = Set(pool.map { $0.albumId ?? $0.album ?? $0.id }).count
+        let maxArtist = max(4, Int((Double(count) / Double(max(1, artists))).rounded(.up)) + 1)
+        let maxAlbum = max(perAlbum, Int((Double(count) / Double(max(1, albums))).rounded(.up)) + 1)
+        return pickOnce(pool, count: count, rng: &rng, maxArtist: maxArtist, perAlbum: maxAlbum, score: score)
+    }
+
+    private static func pickOnce(_ pool: [Song], count: Int, rng: inout SeededRandom, maxArtist: Int, perAlbum: Int,
+                                 score: (Song) -> Double) -> [Song] {
         var seen = Set<String>()
         var items: [(Song, Double)] = []
         for s in pool where seen.insert(s.id).inserted {
@@ -320,7 +330,7 @@ enum Mixer {
             for (i, it) in items.enumerated() { r -= it.1; if r <= 0 { idx = i; break } }
             let s = items.remove(at: idx).0
             let a = key(s.artist ?? ""), al = s.albumId ?? s.album ?? s.id
-            if perArtist[a, default: 0] >= 4 || albums[al, default: 0] >= perAlbum { continue }
+            if perArtist[a, default: 0] >= maxArtist || albums[al, default: 0] >= perAlbum { continue }
             perArtist[a, default: 0] += 1; albums[al, default: 0] += 1
             out.append(s)
         }
