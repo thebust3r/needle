@@ -117,8 +117,9 @@ const screw = {
   get routed() { return eq.enabled || this.chops !== "off" || !!(window.vizUI && vizUI.on); },
   label() {
     const s = SPEEDS[this.speed][0];
-    if (this.speed === "off") return this.chops === "off" ? "" : "Chopped";
+    if (this.speed === "off") return this.chops === "off" ? "" : this.chops === "live" ? "Live Chops" : "Chopped";
     if (this.chops === "off") return s;
+    if (this.chops === "live") return `${s} + Live Chops`;
     return this.speed === "screwed" || this.speed === "syrup" ? `${s} & Chopped` : `${s} + Chops`;
   },
   applyTo(el) {
@@ -134,6 +135,64 @@ const screw = {
     audio.setChops(this.chops);
     player.reroute();
     ui.update();
+  },
+};
+
+/* Live chops: tap a pad (or keys 1-5) and it cuts back right away, in time. Hold Repeat to loop the beat. */
+const livePads = {
+  el: null,
+  keys: { 1: "loop", 2: "stutter", 3: "doubleUp", 4: "runBack", 5: "backItUp" },
+  init() {
+    this.el = $("#np-pads");
+    this.el.addEventListener("pointerdown", (e) => {
+      const b = e.target.closest("[data-move]");
+      if (!b) return;
+      e.preventDefault();
+      try { b.setPointerCapture(e.pointerId); } catch {}
+      this.press(b.dataset.move);
+    });
+    const up = (e) => { if (e.target.closest && e.target.closest("[data-move='loop']")) this.lift("loop"); };
+    this.el.addEventListener("pointerup", up);
+    this.el.addEventListener("pointercancel", up);
+    this.el.addEventListener("contextmenu", (e) => e.preventDefault());     // long-press on phones holds the loop, no menu
+    document.addEventListener("keydown", (e) => {
+      const m = this.keys[e.key];
+      if (!m || e.repeat || this.el.hidden || $("#np").hidden || /INPUT|TEXTAREA/.test(document.activeElement?.tagName)) return;
+      this.press(m);
+    });
+    document.addEventListener("keyup", (e) => { if (this.keys[e.key] === "loop") this.lift("loop"); });
+  },
+  show(on) {
+    if (!this.el) this.init();
+    this.el.hidden = !on;
+    this.status();
+  },
+  press(move) {
+    audio.ensure();
+    audio.trigger(move, move === "loop");
+    const b = $(`[data-move='${move}']`, this.el);
+    b.classList.add("down");
+    if (navigator.vibrate) navigator.vibrate(8);
+  },
+  lift(move) {
+    audio.release();
+    $(`[data-move='${move}']`, this.el).classList.remove("down");
+  },
+  log: [],
+  fired(move, ok) {
+    this.log.push([move, ok]);
+    const b = this.el && $(`[data-move='${move}']`, this.el);
+    if (!b) return;
+    if (move !== "loop") setTimeout(() => b.classList.remove("down"), 120);
+    b.classList.remove("hit", "miss");
+    void b.offsetWidth;
+    b.classList.add(ok ? "hit" : "miss");
+  },
+  status() {
+    if (!this.el || this.el.hidden) return;
+    const st = screw.stats, locked = !!(st && st.confidence > 0.15 && st.bpm > 0);
+    this.el.classList.toggle("waiting", !locked);
+    this.el.title = locked ? `Locked on beat · ${Math.round(st.bpm)} BPM` : "Finding the beat…";
   },
 };
 
@@ -172,7 +231,7 @@ const audio = {
         this.pre.disconnect();
         this.pre.connect(node);
         node.connect(this.vizAnalyser);
-        node.port.onmessage = (e) => { screw.stats = e.data; };
+        node.port.onmessage = (e) => { if ("fired" in e.data) livePads.fired(e.data.fired, e.data.ok); else { screw.stats = e.data; livePads.status(); } };
         this.chop = node;
         this.setChops(screw.chops);
       }).catch(() => { /* older browser: everything else still works */ });
@@ -180,6 +239,9 @@ const audio = {
   },
   setChops(amount) { if (this.chop) this.chop.port.postMessage({ amount }); },
   resetChops() { if (this.chop) this.chop.port.postMessage({ reset: true }); },
+  /** Live mode: play a chop move now. */
+  trigger(move, hold) { if (this.chop) this.chop.port.postMessage({ trigger: move, hold: !!hold }); },
+  release() { if (this.chop) this.chop.port.postMessage({ release: true }); },
   connect(el) {
     this.ensure();
     if (!this.ctx) return false;
@@ -519,6 +581,7 @@ const ui = {
     heart.hidden = !t || !!t.local;
     heart.classList.toggle("on", !!t?.starred);
     $("#np-heart use").setAttribute("href", t?.starred ? "#i-heartfill" : "#i-heart");
+    livePads.show(screw.chops === "live");
     const sc = $("#np-screw"), lab = screw.label();
     sc.classList.toggle("on", !!lab);
     $("span", sc).textContent = lab;
@@ -1151,8 +1214,9 @@ function openScrew() {
       <h3>Chopped &amp; Screwed</h3><p class="sp-sub">Slow it down like a record, and let it cut back on the beat.</p>
       <small>SPEED</small><div class="sp-grid">${Object.entries(SPEEDS).map(([k, [n, r, d]]) =>
         `<button data-speed="${k}" class="${screw.speed === k ? "on" : ""}"><b>${n}</b><span>${k === "off" ? "Normal" : `${Math.round(r * 100)}% · ${d}`}</span></button>`).join("")}</div>
-      <small>CHOPS</small><div class="sp-row">${[["off", "None"], ["light", "Every few bars"], ["heavy", "Every bar, all moves"]].map(([k, d]) =>
+      <small>CHOPS</small><div class="sp-row">${[["off", "None"], ["light", "Every few bars"], ["heavy", "Every bar"], ["live", "You tap them"]].map(([k, d]) =>
         `<button data-chops="${k}" class="${screw.chops === k ? "on" : ""}"><b>${k[0].toUpperCase() + k.slice(1)}</b><span>${d}</span></button>`).join("")}</div>
+      ${screw.chops === "live" ? `<p class="sp-live">Pads show up under the song on Now Playing. Tap one and it cuts back right away, in time. Hold <b>Repeat</b> to loop a beat.${matchMedia("(pointer: fine)").matches ? " Keys 1–5 work too." : ""}</p>` : ""}
       ${screw.chops !== "off" ? `<p class="sp-status" id="sp-status"></p>` : ""}
       <p class="sp-note">Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Needle has found the rhythm.${!window.AudioWorkletNode ? " Chops need a newer browser." : ""}</p>
       <button class="sp-done">Done</button></div>`;

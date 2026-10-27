@@ -98,6 +98,13 @@
     <input id="np-seek" type="range" min="0" max="1000" value="0" aria-label="Song position">
     <div class="times"><span id="np-cur">0:00</span><span id="np-left">-0:00</span></div>
   </div>
+  <div class="np-pads" id="np-pads" hidden role="group" aria-label="Live chops">
+    <button data-move="loop" aria-label="Repeat the last beat. Hold to loop it"><b>Repeat</b><small>hold = loop</small></button>
+    <button data-move="stutter" aria-label="Stutter"><b>Stutter</b><small>ch-ch-ch</small></button>
+    <button data-move="doubleUp" aria-label="Double up"><b>Double</b><small>beat ×2</small></button>
+    <button data-move="runBack" aria-label="Run it back"><b>Run back</b><small>2 beats</small></button>
+    <button data-move="backItUp" aria-label="Back it up"><b>Back up</b><small>a bar</small></button>
+  </div>
   <div class="controls">
     <button id="np-shuffle" class="small" aria-label="Shuffle"><svg class="i"><use href="#i-shuffle"/></svg></button>
     <button id="np-prev" aria-label="Previous"><svg class="i"><use href="#i-prev"/></svg></button>

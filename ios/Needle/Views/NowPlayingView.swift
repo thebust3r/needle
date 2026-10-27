@@ -41,8 +41,13 @@ struct NowPlayingView: View {
                     VStack(spacing: 22) {
                         titleRow
                         scrubber
+                        if player.chops == .live {
+                            LivePads(tint: palette.accent).transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        }
                         controls
-                        VolumeSlider().frame(height: 34).padding(.horizontal, 2)
+                        if player.chops != .live {     // live pads take its spot; the phone's volume buttons still work
+                            VolumeSlider().frame(height: 34).padding(.horizontal, 2)
+                        }
                         bottomRow
                     }
                     .padding(.horizontal, 28)
@@ -69,7 +74,7 @@ struct NowPlayingView: View {
         }
         .sheet(isPresented: $showScrew) {
             ScrewSheet(tint: palette.accent)
-                .presentationDetents([.height(540), .large])
+                .presentationDetents([.height(640), .large])
                 .presentationBackground(.ultraThinMaterial)
         }
         .sheet(isPresented: $showQueue) {

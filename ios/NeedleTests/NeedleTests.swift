@@ -957,6 +957,84 @@ final class ScrewTests: XCTestCase {
         XCTAssertGreaterThan(c.history.count, 0, "chops come back once the beat is found again")
     }
 
+    // MARK: live chops
+
+    func testLiveNeverChopsOnItsOwnAndWaitsForTheBeat() {
+        let x = beat(bpm: 84, seconds: 20, offset: 0.21)
+        var early = true
+        let (c, l, _) = run(x, amount: .live) { c, i in if i == 512 * 80 { early = c.trigger(.repeatBeat) } }   // ~0.9 s in
+        XCTAssertFalse(early, "a tap before the beat is found does nothing")
+        XCTAssertTrue(c.history.isEmpty, "live never chops by itself")
+        XCTAssertEqual(l, x)
+    }
+
+    func testLiveTapsCutBackRightAwayAndInTime() {
+        let bpm = 84.0, x = beat(bpm: bpm, seconds: 40, offset: 0.21), p = 60 / bpm * sr
+        let moves: [ChopMove] = [.repeatBeat, .stutter, .runBack, .doubleUp, .backItUp]
+        var tapped: [Int] = [], ok: [Bool] = []
+        let tapBlocks = moves.indices.map { Int((8 + Double($0) * 4.37) * sr) / 512 }
+        let (c, l, _) = run(x, amount: .live) { c, i in
+            if let k = tapBlocks.firstIndex(of: i / 512) { tapped.append(i + 512); ok.append(c.trigger(moves[k])) }
+        }
+        XCTAssertEqual(ok, Array(repeating: true, count: moves.count))
+        XCTAssertEqual(c.history.count, moves.count)
+        var worstWait = 0.0
+        for (k, chop) in c.history.enumerated() {
+            worstWait = max(worstWait, (chop.start - Double(tapped[k])) / sr * 1000)
+            for cut in chop.cuts {
+                let beats = cut.delay / p
+                XCTAssertEqual(beats * 2, (beats * 2).rounded(), accuracy: 0.03, "goes back whole or half beats")
+                let mid = Int(cut.at + cut.length / 2), d = Int(cut.delay.rounded())
+                for i in stride(from: mid - 100, to: mid + 100, by: 7) { XCTAssertEqual(l[i], x[i - d], accuracy: 1e-6) }
+            }
+            let after = Int(chop.start + chop.length) + 600
+            XCTAssertEqual(l[after], x[after], accuracy: 1e-6, "back to the song after")
+        }
+        metric("screw.live tap_to_cut_worst=\(Int(worstWait))ms")
+        XCTAssertLessThanOrEqual(worstWait, 125, "starts right away, or on a beat that's about to land")
+    }
+
+    func testLiveTapsDuringAChopChainAndHoldLoops() {
+        let bpm = 84.0, x = beat(bpm: bpm, seconds: 30, offset: 0.21), p = 60 / bpm * sr
+        let (c, _, _) = run(x, amount: .live) { c, i in
+            if i == 512 * 860 { c.trigger(.stutter) }          // ~10 s
+            if i == 512 * 878 { c.trigger(.repeatBeat) }       // during the stutter
+        }
+        XCTAssertEqual(c.history.count, 1)
+        XCTAssertEqual(c.history.first?.cuts.count, 4, "the tap lined up right after the stutter")
+
+        let (h, l, _) = run(x, amount: .live) { c, i in
+            if i == 512 * 1034 { c.trigger(.loop, hold: true) }   // ~12 s
+            if i == 512 * 1292 { c.release() }                    // held ~3 s
+        }
+        guard let loop = h.history.first else { return XCTFail("no loop") }
+        let passes = loop.cuts.count
+        metric("screw.live loop_passes=\(passes) in 3s")
+        XCTAssertGreaterThanOrEqual(passes, Int(3 * sr / p))
+        XCTAssertLessThanOrEqual(passes, Int((3 * sr / p).rounded(.up)) + 2)
+        let src = loop.cuts[0].at - loop.cuts[0].delay
+        for cut in loop.cuts {
+            XCTAssertEqual(cut.at - cut.delay, src, accuracy: 2, "every pass is the same beat")
+            let mid = Int(cut.at + cut.length / 2)
+            XCTAssertEqual(l[mid], x[mid - Int(cut.delay.rounded())], accuracy: 1e-6)
+        }
+        let (q, _, _) = run(x, amount: .live) { c, i in
+            if i == 512 * 1034 { c.trigger(.loop, hold: true) }
+            if i == 512 * 1038 { c.release() }
+        }
+        XCTAssertEqual(q.history.first?.cuts.count, 1, "a quick tap on Repeat is one repeat")
+    }
+
+    func testLiveTapsGoThroughTheSharedSettings() {
+        let s = ScrewSettings()
+        s.tap(.loop, hold: true)
+        s.release()
+        let t = s.takeTaps()
+        XCTAssertEqual(t.move, .loop); XCTAssertTrue(t.hold); XCTAssertTrue(t.release)
+        let again = s.takeTaps()
+        XCTAssertNil(again.move); XCTAssertFalse(again.release, "each tap is picked up once")
+    }
+
     func testFastEnoughForTheAudioThread() {
         let x = beat(bpm: 90, seconds: 60)
         let t0 = CFAbsoluteTimeGetCurrent()

@@ -122,7 +122,8 @@ class BeatTracker {
 }
 
 // how often a chop can start (in beats) and how likely it is each time; heavy also picks the wilder moves more
-const CHOPS = { off: null, light: { every: 4, chance: 0.45 }, heavy: { every: 4, chance: 1 } };
+// "live" = no automatic chops, you tap them (see trigger)
+const CHOPS = { off: null, light: { every: 4, chance: 0.45 }, heavy: { every: 4, chance: 1 }, live: null };
 
 /** The moves, as cuts between the live record and copies that are behind. Each cut: [length, delay] in beats.
     The song's own timeline keeps running underneath, like the second deck. */
@@ -132,6 +133,7 @@ const MOVES = {
   stutter: [[0.5, 0.5], [0.5, 1], [0.5, 1.5]], // "ch-ch-ch": the same half beat three times
   doubleUp: [[1, 1], [1, 2]],                  // the last beat twice
   backItUp: [[4, 4]],                          // back up a whole bar
+  loop: [[1, 1]],                              // live only: the last beat, over and over while held
 };
 const PICKS = {
   light: [["runBack", 0.45], ["repeatBeat", 0.3], ["stutter", 0.15], ["doubleUp", 0.1]],
@@ -142,7 +144,7 @@ class Chopper {
   constructor(sampleRate, seed) {
     this.sampleRate = sampleRate;
     this.tracker = new BeatTracker(sampleRate);
-    this.cap = Math.floor(sampleRate * 5);
+    this.cap = Math.floor(sampleRate * 12);     // 12 s of memory: room to hold a loop for a few bars
     this.fade = Math.max(64, Math.floor(sampleRate * 0.006));
     this.rings = [];
     this.rng = (seed || Date.now()) >>> 0 || 1;
@@ -151,7 +153,7 @@ class Chopper {
   }
   reset() {
     this.tracker.reset();
-    this.written = 0; this.beatsSeen = 0; this.lastBeat = -1; this.active = null; this.history = []; this.cooldownUntil = 0;
+    this.written = 0; this.beatsSeen = 0; this.lastBeat = -1; this.active = null; this.history = []; this.cooldownUntil = 0; this.holding = false; this.queued = null;
     this.rings.forEach((r) => r.fill(0));
   }
   random() {   // xorshift32
@@ -170,8 +172,20 @@ class Chopper {
     if (conf) this.plan(start, this.written, conf, amount);    // keeps counting beats even during a chop
     const chop = this.active;
     if (!chop) return;
+    // holding the loop pad: keep adding one more pass of the same beat just before the current one runs out
+    if (chop.loop && this.holding) {
+      const p = chop.segs[0].len, last = chop.segs[chop.segs.length - 1];   // the beat length it started with, so every pass is the same beat
+      if (chop.start + chop.length - this.written < Math.max(frames * 2, this.fade * 2) && last.delay + p < Math.min(this.cap - 8192, this.written)) {
+        chop.segs.push({ at: last.at + last.len, len: p, delay: last.delay + p });
+        chop.length += p;
+      } else if (last.delay + p >= this.cap - 8192) this.holding = false;
+    }
     const f = this.fade, end = chop.start + chop.length;
-    if (start >= end + f) { this.active = null; this.cooldownUntil = end + this.tracker.period; return; }
+    if (start >= end + f) {
+      this.active = null; this.cooldownUntil = end + this.tracker.period;
+      if (this.queued) { const q = this.queued; this.queued = null; this.trigger(q.name, q.hold); }
+      return;
+    }
     const segs = chop.segs;   // [{at, len, delay}] in samples
     const delayAt = (n) => { for (const g of segs) if (n >= g.at && n < g.at + g.len) return g.delay; return 0; };
     channels.forEach((ch, c) => {
@@ -198,6 +212,38 @@ class Chopper {
       }
     });
   }
+
+  /** Live mode: play a move now (or on the beat if it's only a moment away). Every cut goes back whole or half
+      beats, so it stays in time wherever you tap. Tapping during a chop lines the move up right after it.
+      Returns false if the beat isn't found yet. */
+  trigger(name, hold) {
+    const t = this.tracker, p = t.period, moves = MOVES[name];
+    if (!moves || !(p > 0) || t.confidence <= 0.15) return false;
+    const segsFrom = (at) => moves.map(([len, delay]) => { const g = { at, len: len * p, delay: delay * p }; at += len * p; return g; });
+    const a = this.active, now = this.written;
+    if (a && now < a.start + a.length - this.fade) {
+      if (a.length > 8 * p) return false;                       // don't stack up forever
+      const segs = segsFrom(a.start + a.length);
+      if (Math.max(...segs.map((g) => g.delay)) >= Math.min(this.cap - 8192, this.written)) return false;
+      a.segs.push(...segs);
+      a.length = segs[segs.length - 1].at + segs[segs.length - 1].len - a.start;
+      a.loop = name === "loop"; this.holding = !!hold;
+      a.chain = (a.chain || 1) + 1;
+      return true;
+    }
+    if (a) { this.queued = { name, hold }; return true; }         // last few ms of a chop fading out: go right after
+    let at = now;
+    const b = t.nextBeat(at);
+    if (b !== null && b - at < 0.12 * this.sampleRate) at = b;   // snap to a beat that's about to land
+    const segs = segsFrom(at);
+    if (Math.max(...segs.map((g) => g.delay)) >= Math.min(this.cap - 8192, this.written)) return false;
+    this.active = { name, start: at, length: segs[segs.length - 1].at + segs[segs.length - 1].len - at, segs, live: true, loop: name === "loop" };
+    this.holding = !!hold;
+    this.history.push(this.active);
+    if (this.history.length > 64) this.history.shift();
+    return true;
+  }
+  release() { this.holding = false; if (this.queued) this.queued.hold = false; }
 
   plan(from, to, conf, amount) {
     const t = this.tracker;
@@ -238,6 +284,8 @@ if (typeof registerProcessor === "function") {
       this.port.onmessage = (e) => {
         if (e.data.amount) this.amount = e.data.amount;
         if (e.data.reset) this.chopper.reset();
+        if (e.data.trigger) this.port.postMessage({ fired: e.data.trigger, ok: this.chopper.trigger(e.data.trigger, e.data.hold) });
+        if (e.data.release) this.chopper.release();
       };
     }
     process(inputs, outputs) {

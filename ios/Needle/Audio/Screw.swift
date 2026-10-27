@@ -40,7 +40,7 @@ enum ScrewSpeed: String, CaseIterable, Identifiable, Codable {
 }
 
 enum ChopAmount: String, CaseIterable, Identifiable, Codable {
-    case off, light, heavy
+    case off, light, heavy, live   // live = no automatic chops, you tap them
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
     /// How many beats between chances to chop, and how likely a chop is at each chance.
@@ -49,7 +49,7 @@ enum ChopAmount: String, CaseIterable, Identifiable, Codable {
     /// Which moves, and how often: heavy picks the wilder ones more.
     var picks: [(ChopMove, Double)] {
         switch self {
-        case .off: return []
+        case .off, .live: return []
         case .light: return [(.runBack, 0.45), (.repeatBeat, 0.3), (.stutter, 0.15), (.doubleUp, 0.1)]
         case .heavy: return [(.stutter, 0.3), (.runBack, 0.25), (.doubleUp, 0.2), (.repeatBeat, 0.1), (.backItUp, 0.15)]
         }
@@ -59,7 +59,7 @@ enum ChopAmount: String, CaseIterable, Identifiable, Codable {
 /// The moves, as cuts between the live record and copies that are behind. Each cut is (length, delay) in beats;
 /// the song keeps running underneath, like the second deck.
 enum ChopMove: Int, CaseIterable {
-    case repeatBeat, runBack, stutter, doubleUp, backItUp
+    case repeatBeat, runBack, stutter, doubleUp, backItUp, loop
     var cuts: [(Double, Double)] {
         switch self {
         case .repeatBeat: return [(1, 1)]                          // hear the last beat again
@@ -67,6 +67,7 @@ enum ChopMove: Int, CaseIterable {
         case .stutter: return [(0.5, 0.5), (0.5, 1), (0.5, 1.5)]   // "ch-ch-ch": the same half beat three times
         case .doubleUp: return [(1, 1), (1, 2)]                    // the last beat twice
         case .backItUp: return [(4, 4)]                            // back up a whole bar
+        case .loop: return [(1, 1)]                                // live: the last beat, over and over while held
         }
     }
     var label: String {
@@ -76,6 +77,7 @@ enum ChopMove: Int, CaseIterable {
         case .stutter: return "Stutter"
         case .doubleUp: return "Double up"
         case .backItUp: return "Back it up"
+        case .loop: return "Loop"
         }
     }
 }
@@ -111,6 +113,22 @@ final class ScrewSettings: @unchecked Sendable {
         set { os_unfair_lock_lock(&lock); _chops = newValue; os_unfair_lock_unlock(&lock); UserDefaults.standard.set(newValue.rawValue, forKey: "screw.chops") }
     }
     var isOn: Bool { speed != .off || chops != .off }
+
+    // live chops: taps from the UI, picked up by the audio thread on its next block
+    private var _pending: ChopMove?
+    private var _pendingHold = false
+    private var _release = false
+    func tap(_ move: ChopMove, hold: Bool = false) {
+        os_unfair_lock_lock(&lock); _pending = move; _pendingHold = hold; _release = false; os_unfair_lock_unlock(&lock)
+    }
+    func release() { os_unfair_lock_lock(&lock); _release = true; os_unfair_lock_unlock(&lock) }
+    /// Audio thread: what was tapped since last time.
+    func takeTaps() -> (move: ChopMove?, hold: Bool, release: Bool) {
+        os_unfair_lock_lock(&lock); defer { os_unfair_lock_unlock(&lock) }
+        let r = (_pending, _pendingHold, _release)
+        _pending = nil; _release = false
+        return r
+    }
 
     private var _status = ScrewStatus()
     /// Written by the audio thread about once a second, read by the UI.
@@ -320,6 +338,8 @@ final class Chopper {
     private var beatsSeen = 0
     private var lastBeatCounted: Double = -1
     private var cooldownUntil: Double = 0
+    private(set) var holding = false
+    private var queued: (ChopMove, Bool)?
     private var rng: UInt64
     private let fade: Int
     private(set) var active: Chop?
@@ -329,7 +349,7 @@ final class Chopper {
     init(sampleRate: Double, seed: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)) {
         self.sampleRate = sampleRate
         tracker = BeatTracker(sampleRate: sampleRate)
-        cap = Int(sampleRate * 5)
+        cap = Int(sampleRate * 12)               // 12 s of memory: room to hold a loop for a few bars
         fade = max(64, Int(sampleRate * 0.006))
         rng = seed | 1
         history.reserveCapacity(65)
@@ -342,7 +362,7 @@ final class Chopper {
 
     func reset() {
         tracker.reset()
-        written = 0; beatsSeen = 0; lastBeatCounted = -1; cooldownUntil = 0; active = nil; history.removeAll(keepingCapacity: true); count = 0
+        written = 0; beatsSeen = 0; lastBeatCounted = -1; cooldownUntil = 0; active = nil; holding = false; queued = nil; history.removeAll(keepingCapacity: true); count = 0
         for c in rings.indices { for i in rings[c].indices { rings[c][i] = 0 } }
     }
 
@@ -375,10 +395,24 @@ final class Chopper {
         // keep counting beats (even during a chop) and plan the next chop on an upcoming beat
         if amount != .off { plan(from: Double(blockStart), to: Double(written), amount: amount) }
 
-        guard let chop = active else { return }
+        guard var chop = active else { return }
+        // holding the loop pad: add one more pass of the same beat just before the current one runs out
+        if chop.move == .loop, holding, let last = chop.cuts.last {
+            let p = chop.cuts[0].length          // the beat length it started with, so every pass is the same beat
+            if chop.start + chop.length - Double(written) < Double(max(frames * 2, fade * 2)),
+               last.delay + p < min(Double(cap - 8192), Double(written)) {
+                chop.cuts.append(Cut(at: last.at + last.length, length: p, delay: last.delay + p))
+                chop.length += p
+                update(chop)
+            } else if last.delay + p >= Double(cap - 8192) { holding = false }
+        }
         let f = fade
         let end = chop.start + chop.length
-        if Double(blockStart) >= end + Double(f) { active = nil; cooldownUntil = end + tracker.period; return }
+        if Double(blockStart) >= end + Double(f) {
+            active = nil; cooldownUntil = end + tracker.period
+            if let q = queued { queued = nil; _ = trigger(q.0, hold: q.1) }
+            return
+        }
         let s0 = Int(chop.start.rounded()), e0 = Int(end.rounded())
         let cuts = chop.cuts
         for (c, (p, stride)) in channels.enumerated() {
@@ -410,7 +444,58 @@ final class Chopper {
         }
     }
 
+    /// Live mode: play a move now (or on the beat if it's only a moment away). Every cut goes back whole or half
+    /// beats, so it stays in time wherever you tap. Tapping during a chop lines the move up right after it.
+    /// Returns false if the beat isn't found yet.
+    @discardableResult
+    func trigger(_ move: ChopMove, hold: Bool = false) -> Bool {
+        let t = tracker, p = t.period
+        guard p > 0, t.confidence > 0.15 else { return false }
+        let limit = min(Double(cap - 8192), Double(written))
+        func cuts(from start: Double) -> [Cut] {
+            var at = start, out: [Cut] = []
+            for (len, delay) in move.cuts { out.append(Cut(at: at, length: len * p, delay: delay * p)); at += len * p }
+            return out
+        }
+        let now = Double(written)
+        if var a = active {
+            if now < a.start + a.length - Double(fade) {
+                guard a.length <= 8 * p else { return false }          // don't stack up forever
+                let more = cuts(from: a.start + a.length)
+                guard (more.map(\.delay).max() ?? 0) < limit else { return false }
+                a.cuts += more
+                a.length = more[more.count - 1].at + more[more.count - 1].length - a.start
+                if move == .loop { a.move = .loop }
+                update(a)
+                holding = hold
+                return true
+            }
+            queued = (move, hold)                                      // last few ms of a chop fading out: go right after
+            return true
+        }
+        var at = now
+        if let b = t.nextBeat(atOrAfter: at), b - at < 0.12 * sampleRate { at = b }   // snap to a beat that's about to land
+        let c = cuts(from: at)
+        guard (c.map(\.delay).max() ?? 0) < limit else { return false }
+        let chop = Chop(move: move, start: at, length: c[c.count - 1].at + c[c.count - 1].length - at, cuts: c)
+        active = chop
+        holding = hold
+        history.append(chop)
+        if history.count > 64 { history.removeFirst() }
+        count += 1
+        return true
+    }
+
+    /// Changes the chop that's playing (and its history entry, so tests and the status see the whole thing).
+    private func update(_ c: Chop) {
+        if let i = history.indices.last, let a = active, history[i].start == a.start { history[i] = c }
+        active = c
+    }
+
+    func release() { holding = false; if queued != nil { queued?.1 = false } }
+
     private func plan(from: Double, to: Double, amount: ChopAmount) {
+        guard !amount.picks.isEmpty else { return }
         let t = tracker
         guard t.confidence > 0.15, t.period > 0, t.samplesSeen > Int(sampleRate * 4) else { return }
         guard var beat = t.nextBeat(atOrAfter: max(from, lastBeatCounted + t.period * 0.5)) else { return }

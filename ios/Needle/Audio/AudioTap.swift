@@ -85,6 +85,9 @@ final class TapContext {
         let screw = ScrewSettings.shared
         if screw.isOn || chopper?.active != nil {
             if chopper == nil { chopper = Chopper(sampleRate: sampleRate) }
+            let taps = screw.takeTaps()
+            if let m = taps.move { chopper?.trigger(m, hold: taps.hold) }
+            if taps.release { chopper?.release() }       // after the tap: a quick tap on Loop is one repeat
             chopper?.process(channels, frames: frames, amount: screw.chops)
             sinceStatus += frames
             if sinceStatus >= Int(sampleRate), let c = chopper { sinceStatus = 0; screw.status = c.status }   // for the Screw sheet

@@ -8,14 +8,17 @@ struct ScrewSheet: View {
     static func label(_ s: ScrewSpeed, _ c: ChopAmount) -> String {
         switch (s, c) {
         case (.off, .off): return "Off"
+        case (.off, .live): return "Live Chops"
         case (.off, _): return "Chopped"
         case (_, .off): return s.label
+        case (_, .live): return "\(s.label) + Live Chops"
         case (.screwed, _), (.syrup, _): return "\(s.label) & Chopped"
         default: return "\(s.label) + Chops"
         }
     }
 
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -36,12 +39,16 @@ struct ScrewSheet: View {
             }
 
             Text("CHOPS").font(.caption.weight(.bold)).tracking(1).foregroundStyle(Theme.secondary)
-            HStack(spacing: 10) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 ForEach(ChopAmount.allCases) { c in
-                    option(c.label, c == .off ? "None" : c == .light ? "Every few bars" : "Every bar, all moves", selected: player.chops == c) {
+                    option(c.label, Self.chopDetail(c), selected: player.chops == c) {
                         player.setScrew(chops: c)
                     }
                 }
+            }
+            if player.chops == .live {
+                Text("Pads show up under the song on Now Playing. Tap one and it cuts back right away, in time. Hold **Repeat** to loop a beat.")
+                    .font(.footnote).foregroundStyle(.white.opacity(0.85))
             }
             if player.chops != .off {
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
@@ -57,8 +64,19 @@ struct ScrewSheet: View {
                 .font(.caption).foregroundStyle(Theme.tertiary)
         }
         .padding(22)
+        }
+        .scrollBounceBehavior(.basedOnSize)
         .foregroundStyle(.white)
         .sensoryFeedback(.selection, trigger: "\(player.screwSpeed.rawValue)-\(player.chops.rawValue)")
+    }
+
+    static func chopDetail(_ c: ChopAmount) -> String {
+        switch c {
+        case .off: return "None"
+        case .light: return "Every few bars"
+        case .heavy: return "Every bar"
+        case .live: return "You tap them"
+        }
     }
 
     static func statusText(_ st: ScrewStatus) -> String {
