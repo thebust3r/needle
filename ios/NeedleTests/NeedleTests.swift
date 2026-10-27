@@ -452,7 +452,7 @@ final class MixerTests: XCTestCase {
         }
         var lib = MixLibrary()
         // most played: Memphis Rap, then Alt Rock, then R&B
-        lib.frequent = albums.filter { $0.genre == "Memphis Rap" } + albums.filter { $0.genre == "Alt Rock" } + albums.filter { $0.genre == "R&B" }.prefix(3)
+        lib.frequent = albums.filter { $0.genre == "Memphis Rap" } + albums.filter { $0.genre == "Alt Rock" } + Array(albums.filter { $0.genre == "R&B" }.prefix(3))
         lib.recent = Array(albums.filter { $0.genre == "Indie" }.prefix(4))
         lib.sample = songs
         lib.starred = Array(songs.filter { $0.genre == "Jazz" }.prefix(6))
