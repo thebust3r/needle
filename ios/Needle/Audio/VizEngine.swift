@@ -181,7 +181,7 @@ final class VizEngine {
             let v = levels[b]
             if !live { shown[b] = shown[b] * idle + v * 0.6 * (1 - idle); continue }   // paused: calm idle motion only
             peaks[b] = max(v, peaks[b] * peakFall, 0.12)                               // each band's recent loudest
-            let norm = min(1.2, max(0, v * 0.45 + (v / peaks[b]) * 0.55 * min(1, v * 4))) * I   // boost quiet songs, keep silence dark
+            let norm = min(1.2, max(0, v * 0.3 + (v / peaks[b]) * 0.7 * min(1, v * 10))) * I   // boost quiet songs, keep silence dark
             shown[b] = norm > shown[b] ? norm : shown[b] * fall + norm * (1 - fall)
         }
         rawBass = levels[0..<6].reduce(0, +) / 6

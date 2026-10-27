@@ -78,7 +78,7 @@ const Viz = (() => {
       const v = levels[b];
       if (!live) { shown[b] = shown[b] * Math.pow(0.9, k) + v * 0.6 * (1 - Math.pow(0.9, k)); continue; }   // paused: calm idle motion only
       peaks[b] = Math.max(v, peaks[b] * Math.pow(0.996, k), 0.12);              // each band's recent loudest
-      const norm = clamp(v * 0.45 + (v / peaks[b]) * 0.55 * Math.min(1, v * 4), 0, 1.2) * I;   // boost quiet songs, keep silence dark
+      const norm = clamp(v * 0.3 + (v / peaks[b]) * 0.7 * Math.min(1, v * 10), 0, 1.2) * I;   // boost quiet songs, keep silence dark
       shown[b] = norm > shown[b] ? norm : shown[b] * Math.pow(0.86, k) + norm * (1 - Math.pow(0.86, k));
     }
     let s = 0; for (let b = 0; b < 6; b++) s += levels[b]; rawBass = s / 6;

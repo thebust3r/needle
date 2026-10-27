@@ -38,17 +38,34 @@ struct ScrewSheet: View {
             Text("CHOPS").font(.caption.weight(.bold)).tracking(1).foregroundStyle(Theme.secondary)
             HStack(spacing: 10) {
                 ForEach(ChopAmount.allCases) { c in
-                    option(c.label, c == .off ? "None" : c == .light ? "Every few bars" : "Every other bar", selected: player.chops == c) {
+                    option(c.label, c == .off ? "None" : c == .light ? "Every few bars" : "Every bar, all moves", selected: player.chops == c) {
                         player.setScrew(chops: c)
                     }
                 }
             }
-            Text("Chops follow the song's beat. They start a few seconds into each song, once Needle has found the rhythm.")
+            if player.chops != .off {
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    let st = ScrewSettings.shared.status
+                    HStack(spacing: 8) {
+                        Circle().fill(st.locked ? Color.green : Color.orange).frame(width: 8, height: 8)
+                        Text(Self.statusText(st)).font(.footnote.weight(.semibold)).monospacedDigit()
+                    }
+                    .accessibilityIdentifier("screw-status")
+                }
+            }
+            Text("Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Needle has found the rhythm.")
                 .font(.caption).foregroundStyle(Theme.tertiary)
         }
         .padding(22)
         .foregroundStyle(.white)
         .sensoryFeedback(.selection, trigger: "\(player.screwSpeed.rawValue)-\(player.chops.rawValue)")
+    }
+
+    static func statusText(_ st: ScrewStatus) -> String {
+        guard st.locked else { return "Listening for the beat…" }
+        var t = "Locked on beat · \(Int(st.bpm.rounded())) BPM"
+        if let m = st.last { t += " · last: \(m.label)" }
+        return t
     }
 
     private func option(_ title: String, _ sub: String, selected: Bool, action: @escaping () -> Void) -> some View {

@@ -61,6 +61,12 @@ async def main():
         check("finds the slowed-down beat (120 BPM x 0.8 = 96)", abs(bpm - 96) < 2.5 or abs(bpm - 48) < 1.5, f"{bpm:.1f}")
         await pg.wait_for_function("screw.stats && screw.stats.chops > 0", timeout=30000)
         check("chops happen", True, f"{await pg.evaluate('screw.stats.chops')} so far")
+        await pg.click("#np-screw")
+        await pg.wait_for_timeout(700)
+        txt = await pg.inner_text("#sp-status")
+        check("panel shows it's locked on the beat", txt.startswith("Locked on beat") and "BPM" in txt, txt)
+        await pg.screenshot(path=os.path.join(SHOTS, "screw-3-status.png"))
+        await pg.click(".sp-done")
         await pg.screenshot(path=os.path.join(SHOTS, "screw-2-np.png"))
 
         await pg.click("#np-next")

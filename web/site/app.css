@@ -492,3 +492,7 @@ body.viz-full #np { visibility: hidden; }
 .vp-actions { display: flex; gap: 10px; margin-top: 16px; }
 .viz-panel .vp-actions button { flex: 1; justify-content: center; border-radius: 999px; padding: 12px !important; font-weight: 700; background: rgba(255,255,255,.09); }
 .viz-panel .vp-actions .vp-done { background: var(--np-accent, var(--accent)); color: #000; }
+
+.sp-status { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sp-status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #f5a623; flex: none; }
+.sp-status.locked::before { background: #35d07f; }

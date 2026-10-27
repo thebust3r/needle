@@ -1151,20 +1151,34 @@ function openScrew() {
       <h3>Chopped &amp; Screwed</h3><p class="sp-sub">Slow it down like a record, and let it cut back on the beat.</p>
       <small>SPEED</small><div class="sp-grid">${Object.entries(SPEEDS).map(([k, [n, r, d]]) =>
         `<button data-speed="${k}" class="${screw.speed === k ? "on" : ""}"><b>${n}</b><span>${k === "off" ? "Normal" : `${Math.round(r * 100)}% · ${d}`}</span></button>`).join("")}</div>
-      <small>CHOPS</small><div class="sp-row">${[["off", "None"], ["light", "Every few bars"], ["heavy", "Every other bar"]].map(([k, d]) =>
+      <small>CHOPS</small><div class="sp-row">${[["off", "None"], ["light", "Every few bars"], ["heavy", "Every bar, all moves"]].map(([k, d]) =>
         `<button data-chops="${k}" class="${screw.chops === k ? "on" : ""}"><b>${k[0].toUpperCase() + k.slice(1)}</b><span>${d}</span></button>`).join("")}</div>
-      <p class="sp-note">Chops follow the song's beat. They start a few seconds into each song, once Needle has found the rhythm.${!window.AudioWorkletNode ? " Chops need a newer browser." : ""}</p>
+      ${screw.chops !== "off" ? `<p class="sp-status" id="sp-status"></p>` : ""}
+      <p class="sp-note">Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Needle has found the rhythm.${!window.AudioWorkletNode ? " Chops need a newer browser." : ""}</p>
       <button class="sp-done">Done</button></div>`;
+  };
+  let timer = 0;
+  const MOVE_NAMES = { repeatBeat: "Repeat", runBack: "Run it back", stutter: "Stutter", doubleUp: "Double up", backItUp: "Back it up" };
+  const status = () => {
+    const el = $("#sp-status");
+    if (m.hidden) return clearInterval(timer);
+    if (!el) return;
+    const st = screw.stats, locked = st && st.confidence > 0.15 && st.bpm > 0;
+    el.classList.toggle("locked", !!locked);
+    el.textContent = locked ? `Locked on beat · ${Math.round(st.bpm)} BPM${st.last ? ` · last: ${MOVE_NAMES[st.last] || st.last}` : ""}` : "Listening for the beat…";
   };
   render();
   m.hidden = false;
+  status();
+  timer = setInterval(status, 500);
   m.onclick = (e) => {
-    if (e.target === m || e.target.closest(".sp-done")) { m.hidden = true; return; }
+    if (e.target === m || e.target.closest(".sp-done")) { m.hidden = true; clearInterval(timer); return; }
     const b = e.target.closest("[data-speed], [data-chops]");
     if (!b) return;
     audio.ensure();
     screw.set(b.dataset.speed, b.dataset.chops);
     render();
+    status();
   };
 }
 $("#np-queue").onclick = () => { $("#queue").hidden = false; renderQueue(); };

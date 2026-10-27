@@ -852,28 +852,73 @@ final class ScrewTests: XCTestCase {
         let x = beat(bpm: bpm, seconds: 60, offset: offset)
         let (c, l, _) = run(x, amount: .heavy)
         let p = 60 / bpm * sr
-        XCTAssertGreaterThanOrEqual(c.history.count, 4, "heavy chops happen regularly (\(c.history.count) in a minute)")
+        XCTAssertGreaterThanOrEqual(c.count, 15, "heavy chops happen a lot, so you actually hear them (\(c.count) in a minute)")
         var worst = 0.0
         for chop in c.history {
-            var err = (chop.start - offset * sr).truncatingRemainder(dividingBy: p)
-            if err > p / 2 { err -= p }
-            if err < -p / 2 { err += p }
-            worst = max(worst, abs(err) / sr * 1000)
-            XCTAssertTrue([p, p / 2, 2 * p].contains { abs($0 - chop.delay) / p < 0.03 }, "cut back a beat, half a beat or two beats")
-            // in the middle of the chop you hear exactly what played one delay earlier
-            let mid = Int(chop.start + chop.length / 2)
-            let d = Int(chop.delay.rounded())
-            for i in stride(from: mid - 200, to: mid + 200, by: 7) {
-                XCTAssertEqual(l[i], x[i - d], accuracy: 1e-6, "repeat is the real earlier audio")
+            for cut in chop.cuts {
+                var err = (cut.at - offset * sr).truncatingRemainder(dividingBy: p / 2)
+                if err > p / 4 { err -= p / 2 }
+                if err < -p / 4 { err += p / 2 }
+                worst = max(worst, abs(err) / sr * 1000)
+                let beats = cut.delay / p
+                XCTAssertEqual(beats * 2, (beats * 2).rounded(), accuracy: 0.03, "cuts go back whole or half beats")
+                // in the middle of each cut you hear exactly what played one delay earlier
+                let mid = Int(cut.at + cut.length / 2)
+                let d = Int(cut.delay.rounded())
+                for i in stride(from: mid - 150, to: mid + 150, by: 7) {
+                    XCTAssertEqual(l[i], x[i - d], accuracy: 1e-6, "repeat is the real earlier audio")
+                }
             }
             // and it comes back to the song right after
             let after = Int(chop.start + chop.length) + 600
-            XCTAssertEqual(l[after], x[after], accuracy: 1e-6)
+            if after < x.count { XCTAssertEqual(l[after], x[after], accuracy: 1e-6) }
         }
-        metric("screw.chops count=\(c.history.count)/min worst_offbeat=\(String(format: "%.1f", worst))ms")
-        XCTAssertLessThan(worst, 15, "every cut lands within 15 ms of a beat")
+        let kinds = Set(c.history.map(\.move))
+        metric("screw.chops count=\(c.count)/min kinds=\(kinds.count) worst_offbeat=\(String(format: "%.1f", worst))ms")
+        XCTAssertGreaterThanOrEqual(kinds.count, 4, "a mix of moves, not the same one over and over")
+        XCTAssertLessThan(worst, 15, "every cut lands within 15 ms of the beat grid")
         let first = c.history.first.map { $0.start / sr } ?? 0
         XCTAssertGreaterThan(first, 4, "no chops until the beat is found")
+        let (light, _, _) = run(x, amount: .light)
+        metric("screw.chops light=\(light.count)/min")
+        XCTAssertGreaterThanOrEqual(light.count, 6, "light still chops every few bars")
+        XCTAssertLessThan(light.count, c.count)
+    }
+
+    /// Memphis / trap: long sliding 808s that blur the kick, rolling hats, snare on 3 (half-time feel).
+    func testFindsTheBeatUnder808s() {
+        let bpm = 70.0, seconds = 30.0, n = Int(seconds * sr), p = 60 / bpm
+        var x = [Float](repeating: 0, count: n)
+        var rng: UInt64 = 99
+        func noise() -> Float { rng = rng &* 6364136223846793005 &+ 1442695040888963407; return Float(Int64(bitPattern: rng >> 1) % 2000) / 2000 - 0.5 }
+        var k = 0
+        while 0.3 + Double(k) * p < seconds {
+            let t0 = 0.3 + Double(k) * p, st = Int(t0 * sr)
+            if k % 2 == 0 {
+                let f0 = [43.6, 49, 36.7, 41.2][(k / 2) % 4]
+                for i in 0..<Int(1.5 * p * sr) where st + i < n {
+                    let t = Double(i) / sr
+                    x[st + i] += Float(0.85 * sin(2 * .pi * (f0 * (1 + 0.6 * exp(-t * 18))) * t) * exp(-t * 1.4))
+                }
+            }
+            if k % 4 == 2 { for i in 0..<Int(0.2 * sr) where st + i < n { x[st + i] += noise() * Float(0.5 * exp(-Double(i) / sr * 18)) } }
+            let rolls = k % 8 == 7 ? 8 : 4
+            for h in 0..<rolls {
+                let hs = Int((t0 + Double(h) * p / Double(rolls)) * sr)
+                for i in 0..<Int(0.025 * sr) where hs + i < n { x[hs + i] += noise() * Float(0.12 * exp(-Double(i) / sr * 140)) }
+            }
+            k += 1
+        }
+        let (c, _, _) = run(x, amount: .heavy)
+        let ratio = c.tracker.bpm / bpm
+        metric("screw.808 found=\(String(format: "%.1f", c.tracker.bpm)) confidence=\(String(format: "%.2f", c.tracker.confidence)) chops=\(c.count)")
+        XCTAssertTrue([1.0, 0.5, 2.0].contains { abs(ratio - $0) < 0.02 }, "70 BPM 808 song -> \(c.tracker.bpm)")
+        XCTAssertGreaterThan(c.count, 3, "it chops 808-heavy songs too")
+        for chop in c.history {
+            var err = (chop.start / sr - 0.3).truncatingRemainder(dividingBy: p)
+            if err > p / 2 { err -= p }
+            XCTAssertLessThan(abs(err) * 1000, 20, "on the beat")
+        }
     }
 
     func testCutsDontClick() {
@@ -883,7 +928,7 @@ final class ScrewTests: XCTestCase {
         for i in 1..<x.count { inputMax = max(inputMax, abs(x[i] - x[i - 1])) }
         var cutMax: Float = 0
         for chop in c.history {
-            for edge in [Int(chop.start), Int(chop.start + chop.length)] {
+            for edge in chop.cuts.map({ Int($0.at) }) + [Int(chop.start + chop.length)] {
                 for i in (edge - 400)..<(edge + 400) where i > 0 && i < l.count { cutMax = max(cutMax, abs(l[i] - l[i - 1])) }
             }
         }

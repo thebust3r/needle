@@ -14,6 +14,7 @@ final class TapContext {
     var mono: [Float] = []
     var channelsInState = 0
     var chopper: Chopper?
+    var sinceStatus = 0
     var expectedStart: Double = -1          // where the next block should start in the song (to notice seeks)
 
     func rebuild(channels: Int) {
@@ -85,6 +86,8 @@ final class TapContext {
         if screw.isOn || chopper?.active != nil {
             if chopper == nil { chopper = Chopper(sampleRate: sampleRate) }
             chopper?.process(channels, frames: frames, amount: screw.chops)
+            sinceStatus += frames
+            if sinceStatus >= Int(sampleRate), let c = chopper { sinceStatus = 0; screw.status = c.status }   // for the Screw sheet
         }
 
         // send a copy to the spectrum display

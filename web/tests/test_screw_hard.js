@@ -42,3 +42,32 @@ check("loud synth pad", 76, { pad: 0.4 });
 check("tempo drifts 2%", 90, { drift: 0.02 });
 check("fast trap 140", 140, {});
 check("slow 64", 64, {});
+
+// Memphis / trap style: long sliding 808 notes that blur the kick, rolling 16th hats, snare on 3 (half-time feel)
+(function memphis808() {
+  const bpm = 70, seconds = 60, n = Math.floor(seconds * sr), x = new Float32Array(n), p = 60 / bpm;
+  let s = 99; const rnd = () => { s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648 - 0.5; };
+  const beats = [];
+  for (let k = 0; 0.3 + k * p < seconds; k++) {
+    const t0 = 0.3 + k * p, st = Math.floor(t0 * sr);
+    beats.push(t0);
+    if (k % 2 === 0) {      // 808: long, pitch-sliding sub bass that rings for ~1.5 beats
+      const f0 = [43.6, 49, 36.7, 41.2][(k / 2) % 4];
+      for (let i = 0; i < 1.5 * p * sr && st + i < n; i++) {
+        const t = i / sr;
+        x[st + i] += 0.85 * Math.sin(2 * Math.PI * (f0 * (1 + 0.6 * Math.exp(-t * 18))) * t) * Math.exp(-t * 1.4);
+      }
+    }
+    if (k % 4 === 2) for (let i = 0; i < 0.2 * sr && st + i < n; i++) x[st + i] += rnd() * 0.5 * Math.exp(-i / sr * 18);   // snare on 3
+    const rolls = k % 8 === 7 ? 8 : 4;                                                                                    // hat rolls
+    for (let h = 0; h < rolls; h++) { const hs = Math.floor((t0 + h * p / rolls) * sr); for (let i = 0; i < 0.025 * sr && hs + i < n; i++) x[hs + i] += rnd() * 0.12 * Math.exp(-i / sr * 140); }
+  }
+  const c = new Chopper(sr, 5), l = Float32Array.from(x);
+  for (let i = 0; i < n; i += 128) { const m = Math.min(128, n - i); c.process([l.subarray(i, i + m)], m, "heavy"); }
+  let worst = 0;
+  for (const ch of c.history) { if (ch.start >= n) continue; worst = Math.max(worst, Math.min(...beats.map((b) => Math.abs(b - ch.start / sr))) * 1000); }
+  const ratio = c.tracker.bpm / bpm;
+  const ok = (Math.abs(ratio - 1) < 0.02 || Math.abs(ratio - 2) < 0.04 || Math.abs(ratio - 0.5) < 0.02) && c.history.length >= 10 && worst < 20;
+  if (!ok) process.exitCode = 1;
+  console.log(`${"Memphis 808, 70 BPM".padEnd(28)} found ${c.tracker.bpm.toFixed(1)} (x${ratio.toFixed(2)}) conf ${c.tracker.confidence.toFixed(2)} chops ${c.history.length} worst ${worst.toFixed(1)}ms ${ok ? "OK" : "BAD"}`);
+})();
