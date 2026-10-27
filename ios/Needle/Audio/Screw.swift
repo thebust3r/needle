@@ -153,6 +153,7 @@ final class BeatTracker {
     private var raw: [Double]                // scratch for the tempo search (allocated once, not on the audio thread)
     private var scores: [Double]
     private var phase: [Float]
+    private var lin: [Float]                 // the onset window copied out in order, minus its mean (for the tempo search)
     private var envCount = 0                 // total hops seen
     private(set) var level: Float = 0        // slow running loudness
     private var prevLowForPhase: Float = 0
@@ -184,6 +185,7 @@ final class BeatTracker {
         raw = [Double](repeating: 0, count: 2 * maxLag + 2)
         scores = [Double](repeating: 0, count: maxLag + 2)
         phase = [Float](repeating: 0, count: maxLag + 2)
+        lin = [Float](repeating: 0, count: maxHops)
     }
 
     func reset() {
@@ -248,15 +250,21 @@ final class BeatTracker {
         for i in start..<envCount { mean += e(i) }
         mean /= Float(n)
         var var0: Float = 0
-        for i in start..<envCount { var0 += (e(i) - mean) * (e(i) - mean) }
+        for k in 0..<n { let v = e(start + k) - mean; lin[k] = v; var0 += v * v }
         var0 /= Float(n)
         // Autocorrelation, plus a half-weight vote from twice the lag: a beat that also lines up two beats later (where
         // kicks and 808s usually repeat) wins over an in-between lag that only the steady hi-hats agree with.
-        for lag in minLag...(2 * maxLag + 1) {
-            guard lag < n else { raw[lag] = 0; continue }
-            var s: Float = 0
-            for i in (start + lag)..<envCount { s += (e(i) - mean) * (e(i - lag) - mean) }
-            raw[lag] = Double(s) / Double(n - lag)
+        let lo = minLag, hi = 2 * maxLag + 1
+        lin.withUnsafeBufferPointer { x in
+            raw.withUnsafeMutableBufferPointer { out in
+                for lag in lo...hi {
+                    guard lag < n else { out[lag] = 0; continue }
+                    var s: Float = 0
+                    var i = lag
+                    while i < n { s += x[i] * x[i - lag]; i += 1 }
+                    out[lag] = Double(s) / Double(n - lag)
+                }
+            }
         }
         var best = 0.0, bestLag = 0
         for lag in minLag...maxLag {
@@ -415,30 +423,33 @@ final class Chopper {
         }
         let s0 = Int(chop.start.rounded()), e0 = Int(end.rounded())
         let cuts = chop.cuts
+        let lastD = Int(cuts[cuts.count - 1].delay.rounded())
         for (c, (p, stride)) in channels.enumerated() {
             rings[c].withUnsafeBufferPointer { ring in
-                func read(_ n: Int, _ d: Int, _ live: Float) -> Float { d == 0 ? live : ring[((n - d) % cap + cap) % cap] }
+                @inline(__always) func read(_ n: Int, _ d: Int, _ live: Float) -> Float { d == 0 ? live : ring[((n - d) % cap + cap) % cap] }
+                // cuts follow one after another, so walk through them with a cursor
+                var j = 0
+                var a = Int(cuts[0].at.rounded()), d = Int(cuts[0].delay.rounded()), prevD = 0
                 for i in 0..<frames {
                     let n = blockStart + i
                     guard n >= s0, n < e0 + f else { continue }
                     let live = p[i * stride]
-                    var d = 0, k = -1
-                    for (j, g) in cuts.enumerated() {
-                        let a = Int(g.at.rounded())
-                        if n >= a && n < Int((g.at + g.length).rounded()) { d = Int(g.delay.rounded()) }
-                        if n >= a && n < a + f { k = j }
-                    }
-                    var v = read(n, d, live)
-                    if k >= 0 {
-                        // the cut before this sample: fade over 6 ms from what was playing to the new copy
-                        let prevD = k == 0 ? 0 : Int(cuts[k - 1].delay.rounded())
-                        let m = Float(n - Int(cuts[k].at.rounded())) / Float(f)
-                        v = read(n, prevD, live) * (1 - m) + v * m
-                    } else if n >= e0 {
+                    if n < e0 {
+                        while j + 1 < cuts.count, n >= Int(cuts[j + 1].at.rounded()) {
+                            j += 1; prevD = d
+                            a = Int(cuts[j].at.rounded()); d = Int(cuts[j].delay.rounded())
+                        }
+                        var v = read(n, d, live)
+                        if n < a + f {
+                            // the cut before this sample: fade over 6 ms from what was playing to the new copy
+                            let m = Float(n - a) / Float(f)
+                            v = read(n, prevD, live) * (1 - m) + v * m
+                        }
+                        p[i * stride] = v
+                    } else {
                         let m = Float(n - e0) / Float(f)                                  // fade back to live
-                        v = read(n, Int(cuts[cuts.count - 1].delay.rounded()), live) * (1 - m) + live * m
+                        p[i * stride] = read(n, lastD, live) * (1 - m) + live * m
                     }
-                    p[i * stride] = v
                 }
             }
         }
