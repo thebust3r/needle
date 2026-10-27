@@ -83,7 +83,10 @@ final class BeatTracker {
     static let hop = 512
     private let maxHops: Int
     private var env: [Float]
+    private var envLow: [Float]              // low-end (kick) onsets, used to place the beats
     private var envCount = 0               // total hops seen
+    private var level: Float = 0           // slow running loudness
+    private var prevLowForPhase: Float = 0
     private var acc = 0, accLow: Float = 0, accAll: Float = 0
     private var lp: Float = 0
     private var prevLow: Float = 0, prevAll: Float = 0
@@ -103,12 +106,13 @@ final class BeatTracker {
         self.sampleRate = sampleRate
         maxHops = Int(6.0 * sampleRate / Double(Self.hop))
         env = [Float](repeating: 0, count: maxHops)
+        envLow = [Float](repeating: 0, count: maxHops)
     }
 
     func reset() {
         envCount = 0; acc = 0; accLow = 0; accAll = 0; lp = 0; prevLow = 0; prevAll = 0
-        period = 0; anchor = 0; confidence = 0; samplesSeen = 0; sinceEstimate = 0
-        for i in env.indices { env[i] = 0 }
+        period = 0; anchor = 0; confidence = 0; samplesSeen = 0; sinceEstimate = 0; level = 0; prevLowForPhase = 0
+        for i in env.indices { env[i] = 0; envLow[i] = 0 }
     }
 
     func feed(_ x: UnsafePointer<Float>, count: Int, stride: Int = 1) {
@@ -118,6 +122,7 @@ final class BeatTracker {
             lp += a * (s - lp)
             accLow += lp * lp
             accAll += s * s
+            level = level * 0.99998 + s * s * 0.00002
             acc += 1
             if acc == Self.hop { pushHop() }
         }
@@ -130,6 +135,8 @@ final class BeatTracker {
         prevLow = low; prevAll = all
         accLow = 0; accAll = 0; acc = 0
         env[envCount % maxHops] = onset
+        envLow[envCount % maxHops] = max(0, low - prevLowForPhase)
+        prevLowForPhase = low
         envCount += 1
         sinceEstimate += 1
         if sinceEstimate >= Int(0.5 * sampleRate / Double(Self.hop)), envCount >= Int(3 * sampleRate / Double(Self.hop)) {
@@ -142,6 +149,10 @@ final class BeatTracker {
         guard hopIndex >= 0, hopIndex < envCount, envCount - hopIndex <= maxHops else { return 0 }
         return env[hopIndex % maxHops]
     }
+    private func eLow(_ hopIndex: Int) -> Float {
+        guard hopIndex >= 0, hopIndex < envCount, envCount - hopIndex <= maxHops else { return 0 }
+        return envLow[hopIndex % maxHops]
+    }
 
     private func estimate() {
         let n = min(envCount, maxHops)
@@ -151,6 +162,9 @@ final class BeatTracker {
         var mean: Float = 0
         for i in start..<envCount { mean += e(i) }
         mean /= Float(n)
+        var var0: Float = 0
+        for i in start..<envCount { var0 += (e(i) - mean) * (e(i) - mean) }
+        var0 /= Float(n)
         var best = 0.0, bestLag = 0, total = 0.0
         var scores = [Double](repeating: 0, count: maxLag + 2)
         for lag in minLag...maxLag {
@@ -172,21 +186,35 @@ final class BeatTracker {
         let denom = l - 2 * best + r
         if denom < 0 { lag += 0.5 * (l - r) / denom }
         let newPeriod = lag * Double(Self.hop)
-        confidence = min(1, best / max(1e-9, total / Double(maxLag - minLag + 1)) / 6)
+        // how clearly it repeats compared with the overall wobble (hiss or silence score low), and only for actual music
+        let pOct = log2(60 * hopsPerSec / Double(bestLag) / 100)
+        let prior = exp(-0.5 * (pOct * pOct) / (0.6 * 0.6))
+        let strength = var0 > 1e-9 ? best / prior / Double(var0) : 0
+        var recent: Float = 0
+        for i in (envCount - Int(2 * hopsPerSec))..<envCount { recent += e(i) }
+        let loudEnough = level > 0.0003            // about -35 dB
+        confidence = recent < 0.5 || !loudEnough ? 0 : max(0, min(1, (strength - 0.12) / 0.3))
+        _ = total
 
         // where the beats are: the offset whose evenly spaced hits are strongest over the last 8 beats
         let lagI = lag
-        var bestPhase = 0.0, bestScore: Float = -1
         let steps = max(1, Int(lagI))
+        var phase = [Float](repeating: 0, count: steps)
+        var bestPhase = 0, bestScore: Float = -1
         for o in 0..<steps {
             var sc: Float = 0
             for k in 0..<8 {
                 let idx = envCount - 1 - o - Int((Double(k) * lagI).rounded())
-                sc += e(idx) + 0.5 * (e(idx - 1) + e(idx + 1))
+                sc += eLow(idx) + 0.5 * (eLow(idx - 1) + eLow(idx + 1)) + 0.3 * e(idx)
             }
-            if sc > bestScore { bestScore = sc; bestPhase = Double(o) }
+            phase[o] = sc
+            if sc > bestScore { bestScore = sc; bestPhase = o }
         }
-        let beatHop = Double(envCount - 1) - bestPhase
+        // sub-step accuracy from the neighbors
+        let pl = phase[(bestPhase - 1 + steps) % steps], pr = phase[(bestPhase + 1) % steps]
+        let pd = pl - 2 * bestScore + pr
+        let frac = pd < 0 ? max(-0.5, min(0.5, Double(0.5 * (pl - pr) / pd))) : 0
+        let beatHop = Double(envCount - 1) - (Double(bestPhase) + frac)
         // an onset is measured at the end of its hop; the hit itself started about half a hop earlier
         let newAnchor = (beatHop + 0.5) * Double(Self.hop)
         if period > 0, abs(newPeriod - period) / period < 0.04 {
@@ -298,7 +326,9 @@ final class Chopper {
         guard t.confidence > 0.25, t.period > 0, t.samplesSeen > Int(sampleRate * 4) else { return }
         // count beats as they go by
         var beat = t.nextBeat(atOrAfter: max(from, lastBeatCounted + t.period * 0.5)) ?? to
-        while beat < to + t.period * 2 {
+        // plan just ahead (fresh beat estimates), but far enough to cover the next audio block
+        let horizon = to + max(Double(fade * 2), min(t.period * 0.5, 8192))
+        while beat < horizon {
             if beat > lastBeatCounted + t.period * 0.5 {
                 lastBeatCounted = beat
                 beatsSeen += 1
