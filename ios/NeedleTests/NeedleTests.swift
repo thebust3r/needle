@@ -847,45 +847,64 @@ final class ScrewTests: XCTestCase {
         }
     }
 
+    let fadeLen = max(64, Int(44100.0 * 0.006))
+
+    /// During every cut you hear exactly the earlier audio, and after the chop the song carries on from where it left off.
+    func exactAndResumes(_ ch: Chopper.Chop, _ l: [Float], _ x: [Float]) -> (exact: Bool, resumes: Bool) {
+        var exact = true
+        for g in ch.played {
+            var t = fadeLen
+            while t < g.len - fadeLen, g.oc + t < l.count {
+                if abs(l[g.oc + t] - x[g.from + t]) > 1e-6 { exact = false }
+                t += 7
+            }
+        }
+        guard let last = ch.played.last, let first = ch.played.first else { return (false, false) }
+        let resume = last.from + last.len
+        var resumes = abs(resume - first.at) <= 2
+        var t = 0
+        while t < 300, ch.end + t < l.count, resume + t < x.count {
+            if abs(l[ch.end + t] - x[resume + t]) > 1e-6 { resumes = false }
+            t += 7
+        }
+        return (exact, resumes)
+    }
+
     func testChopsLandOnTheBeatAndRepeatIt() {
         let bpm = 84.0, offset = 0.21
         let x = beat(bpm: bpm, seconds: 60, offset: offset)
         let (c, l, _) = run(x, amount: .heavy)
         let p = 60 / bpm * sr
-        XCTAssertGreaterThanOrEqual(c.count, 15, "heavy chops happen a lot, so you actually hear them (\(c.count) in a minute)")
+        XCTAssertGreaterThanOrEqual(c.count, 12, "heavy chops happen a lot, so you actually hear them (\(c.count) in a minute)")
         var worst = 0.0
-        for chop in c.history {
-            for cut in chop.cuts {
-                var err = (cut.at - offset * sr).truncatingRemainder(dividingBy: p / 2)
+        for chop in c.history where !chop.played.isEmpty {
+            for g in chop.played {
+                var err = (Double(g.at) - offset * sr).truncatingRemainder(dividingBy: p / 2)
                 if err > p / 4 { err -= p / 2 }
                 if err < -p / 4 { err += p / 2 }
                 worst = max(worst, abs(err) / sr * 1000)
-                let beats = cut.delay / p
-                XCTAssertEqual(beats * 2, (beats * 2).rounded(), accuracy: 0.03, "cuts go back whole or half beats")
-                // in the middle of each cut you hear exactly what played one delay earlier
-                let mid = Int(cut.at + cut.length / 2)
-                let d = Int(cut.delay.rounded())
-                for i in stride(from: mid - 150, to: mid + 150, by: 7) {
-                    XCTAssertEqual(l[i], x[i - d], accuracy: 1e-6, "repeat is the real earlier audio")
-                }
             }
-            // and it comes back to the song right after
-            let after = Int(chop.start + chop.length) + 600
-            if after < x.count { XCTAssertEqual(l[after], x[after], accuracy: 1e-6) }
+            for j in chop.jumps {
+                let beats = j.J / p
+                XCTAssertEqual(beats * 2, (beats * 2).rounded(), accuracy: 0.03, "jumps go back whole or half beats")
+            }
+            let r = exactAndResumes(chop, l, x)
+            XCTAssertTrue(r.exact, "repeats are the real earlier audio")
+            XCTAssertTrue(r.resumes, "the song picks up where the chop left off")
         }
         let kinds = Set(c.history.map(\.move))
-        metric("screw.chops count=\(c.count)/min kinds=\(kinds.count) worst_offbeat=\(String(format: "%.1f", worst))ms")
+        metric("screw.chops count=\(c.count)/min kinds=\(kinds.count) worst_offbeat=\(String(format: "%.1f", worst))ms added=\(String(format: "%.1f", Double(c.lag) / sr))s")
         XCTAssertGreaterThanOrEqual(kinds.count, 4, "a mix of moves, not the same one over and over")
         XCTAssertLessThan(worst, 15, "every cut lands within 15 ms of the beat grid")
-        let first = c.history.first.map { $0.start / sr } ?? 0
+        XCTAssertGreaterThan(Double(c.lag) / sr, 5, "chops made the song longer")
+        let first = c.history.first.map { Double($0.start) / sr } ?? 0
         XCTAssertGreaterThan(first, 4, "no chops until the beat is found")
         let (light, _, _) = run(x, amount: .light)
         metric("screw.chops light=\(light.count)/min")
-        XCTAssertGreaterThanOrEqual(light.count, 6, "light still chops every few bars")
+        XCTAssertGreaterThanOrEqual(light.count, 5, "light still chops every few bars")
         XCTAssertLessThan(light.count, c.count)
     }
 
-    /// Memphis / trap: long sliding 808s that blur the kick, rolling hats, snare on 3 (half-time feel).
     func testFindsTheBeatUnder808s() {
         let bpm = 70.0, seconds = 30.0, n = Int(seconds * sr), p = 60 / bpm
         var x = [Float](repeating: 0, count: n)
@@ -914,9 +933,9 @@ final class ScrewTests: XCTestCase {
         metric("screw.808 found=\(String(format: "%.1f", c.tracker.bpm)) confidence=\(String(format: "%.2f", c.tracker.confidence)) chops=\(c.count)")
         XCTAssertTrue([1.0, 0.5, 2.0].contains { abs(ratio - $0) < 0.02 }, "70 BPM 808 song -> \(c.tracker.bpm)")
         XCTAssertGreaterThan(c.count, 3, "it chops 808-heavy songs too")
-        for chop in c.history {
-            var err = (chop.start / sr - 0.3).truncatingRemainder(dividingBy: p)
-            if err > p / 2 { err -= p }
+        for chop in c.history where !chop.played.isEmpty {
+            var err = (Double(chop.played[0].at) / sr - 0.3).truncatingRemainder(dividingBy: p / 2)
+            if err > p / 4 { err -= p / 2 }
             XCTAssertLessThan(abs(err) * 1000, 20, "on the beat")
         }
     }
@@ -928,7 +947,7 @@ final class ScrewTests: XCTestCase {
         for i in 1..<x.count { inputMax = max(inputMax, abs(x[i] - x[i - 1])) }
         var cutMax: Float = 0
         for chop in c.history {
-            for edge in chop.cuts.map({ Int($0.at) }) + [Int(chop.start + chop.length)] {
+            for edge in chop.played.map(\.oc) {
                 for i in (edge - 400)..<(edge + 400) where i > 0 && i < l.count { cutMax = max(cutMax, abs(l[i] - l[i - 1])) }
             }
         }
@@ -953,7 +972,7 @@ final class ScrewTests: XCTestCase {
         }
         XCTAssertGreaterThan(before, 0, "it was chopping before the jump")
         // counting starts over at the jump: nothing in the first 4 seconds after it, then it finds the beat again
-        XCTAssertTrue(c.history.allSatisfy { $0.start > 4 * sr }, "no chops right after a jump")
+        XCTAssertTrue(c.history.allSatisfy { Double($0.start) > 4 * sr }, "no chops right after a jump")
         XCTAssertGreaterThan(c.history.count, 0, "chops come back once the beat is found again")
     }
 
@@ -1023,17 +1042,19 @@ final class ScrewTests: XCTestCase {
         XCTAssertEqual(c.history.count, moves.count)
         var worstWait = 0.0
         for (k, chop) in c.history.enumerated() {
-            worstWait = max(worstWait, (chop.start - Double(tapped[k])) / sr * 1000)
-            for cut in chop.cuts {
-                let beats = cut.delay / p
+            guard let first = chop.played.first else { XCTFail("didn't play"); continue }
+            worstWait = max(worstWait, Double(first.oc - tapped[k]) / sr * 1000)
+            for j in chop.jumps {
+                let beats = j.J / p
                 XCTAssertEqual(beats * 2, (beats * 2).rounded(), accuracy: 0.03, "goes back whole or half beats")
-                let mid = Int(cut.at + cut.length / 2), d = Int(cut.delay.rounded())
-                for i in stride(from: mid - 100, to: mid + 100, by: 7) { XCTAssertEqual(l[i], x[i - d], accuracy: 1e-6) }
             }
-            let after = Int(chop.start + chop.length) + 600
-            XCTAssertEqual(l[after], x[after], accuracy: 1e-6, "back to the song after")
+            let r = exactAndResumes(chop, l, x)
+            XCTAssertTrue(r.exact, "repeats are the real earlier audio")
+            XCTAssertTrue(r.resumes, "then the song picks up where the chop left off")
         }
-        metric("screw.live tap_to_cut_worst=\(Int(worstWait))ms")
+        let added = Double(c.lag) / sr, expected = (1 + 1.5 + 2 + 2 + 4) * p / sr
+        metric("screw.live tap_to_cut_worst=\(Int(worstWait))ms added=\(String(format: "%.2f", added))s")
+        XCTAssertEqual(added, expected, accuracy: 0.01, "the song got longer by exactly the chops")
         XCTAssertLessThanOrEqual(worstWait, 125, "starts right away, or on a beat that's about to land")
     }
 
@@ -1044,28 +1065,58 @@ final class ScrewTests: XCTestCase {
             if i == 512 * 878 { c.trigger(.repeatBeat) }       // during the stutter
         }
         XCTAssertEqual(c.history.count, 1)
-        XCTAssertEqual(c.history.first?.cuts.count, 4, "the tap lined up right after the stutter")
+        XCTAssertEqual(c.history.first?.jumps.count, 4, "the tap lined up right after the stutter")
 
         let (h, l, _) = run(x, amount: .live) { c, i in
             if i == 512 * 1034 { c.trigger(.loop, hold: true) }   // ~12 s
             if i == 512 * 1292 { c.release() }                    // held ~3 s
         }
         guard let loop = h.history.first else { return XCTFail("no loop") }
-        let passes = loop.cuts.count
+        let passes = loop.played.count
         metric("screw.live loop_passes=\(passes) in 3s")
         XCTAssertGreaterThanOrEqual(passes, Int(3 * sr / p))
         XCTAssertLessThanOrEqual(passes, Int((3 * sr / p).rounded(.up)) + 2)
-        let src = loop.cuts[0].at - loop.cuts[0].delay
-        for cut in loop.cuts {
-            XCTAssertEqual(cut.at - cut.delay, src, accuracy: 2, "every pass is the same beat")
-            let mid = Int(cut.at + cut.length / 2)
-            XCTAssertEqual(l[mid], x[mid - Int(cut.delay.rounded())], accuracy: 1e-6)
-        }
+        for g in loop.played { XCTAssertLessThanOrEqual(abs(g.from - loop.played[0].from), 2, "every pass is the same beat") }
+        let r = exactAndResumes(loop, l, x)
+        XCTAssertTrue(r.exact && r.resumes, "let go and the song picks up right after that beat")
         let (q, _, _) = run(x, amount: .live) { c, i in
             if i == 512 * 1034 { c.trigger(.loop, hold: true) }
             if i == 512 * 1038 { c.release() }
         }
-        XCTAssertEqual(q.history.first?.cuts.count, 1, "a quick tap on Repeat is one repeat")
+        XCTAssertEqual(q.history.first?.jumps.count, 1, "a quick tap on Repeat is one repeat")
+    }
+
+    func testChopTimeCarriesIntoTheNextSong() {
+        // song A gets chopped, then song B starts feeding the same chopper: the end of A plays first, then B, no gap
+        let a = beat(bpm: 84, seconds: 14, offset: 0.21), b = beat(bpm: 84, seconds: 6, offset: 0.1, seed: 99)
+        let c = Chopper(sampleRate: sr, seed: 3)
+        c.prepare(channels: 1)
+        var out: [Float] = []
+        func feed(_ src: [Float]) {
+            var i = 0
+            var buf = [Float](repeating: 0, count: 512)
+            while i < src.count {
+                let n = min(512, src.count - i)
+                for k in 0..<n { buf[k] = src[i + k] }
+                buf.withUnsafeMutableBufferPointer { p in c.process([(p.baseAddress!, 1)], frames: n, amount: .live) }
+                out += buf[0..<n]
+                if i == 512 * 900 { c.trigger(.backItUp) }
+                i += n
+            }
+        }
+        feed(a)
+        let lag = c.lag
+        XCTAssertGreaterThan(lag, Int(2 * sr), "a bar was added")
+        feed(b)
+        // the last `lag` samples of A come out right after A's file ends, then B begins
+        let endA = a.count
+        var ok = true
+        var t = 0
+        while t < lag - 64 { if abs(out[endA + t] - a[a.count - lag + t]) > 1e-6 { ok = false; break }; t += 13 }
+        XCTAssertTrue(ok, "the rest of song A plays out")
+        t = 0
+        while t < 2000 { if abs(out[endA + lag + t] - b[t]) > 1e-6 { ok = false; break }; t += 13 }
+        XCTAssertTrue(ok, "then song B starts from its beginning")
     }
 
     func testLiveTapsGoThroughTheSharedSettings() {

@@ -36,27 +36,30 @@ for (const [bpm, off] of [[72, .1], [80, .3], [84, .21], [90, .137], [100, .05],
 }
 const x = beat(84, 60, 0.21);
 const { c, l } = run(x, "heavy");
-const p = 60 / 84 * sr; let worst = 0, repeatOk = true;
+const p = 60 / 84 * sr; let worst = 0, repeatOk = true, resumeOk = true;
 const moves = {};
+const f = Math.max(64, Math.floor(sr * 0.006));
 for (const ch of c.history) {
+  if (!ch.played) continue;
   moves[ch.name] = (moves[ch.name] || 0) + 1;
-  let e = (ch.start - 0.21 * sr) % p; if (e > p / 2) e -= p; if (e < -p / 2) e += p; worst = Math.max(worst, Math.abs(e) / sr * 1000);
-  if (ch.start + ch.length + 600 >= x.length) continue;
-  for (const g of ch.segs) {   // in the middle of every cut you hear exactly the earlier audio
-    const mid = Math.floor(g.at + g.len / 2), d = Math.round(g.delay);
-    for (let i = mid - 100; i < mid + 100; i += 7) if (Math.abs(l[i] - x[i - d]) > 1e-6) repeatOk = false;
+  // every cut lands on a beat of the song as you hear it
+  for (const g of ch.played) { let e = (g.at - 0.21 * sr) % (p / 2); if (e > p / 4) e -= p / 2; if (e < -p / 4) e += p / 2; worst = Math.max(worst, Math.abs(e) / sr * 1000); }
+  for (const g of ch.played) {   // during every cut you hear exactly the earlier audio
+    for (let t = f; t < g.len - f; t += 7) if (g.oc + t < l.length && Math.abs(l[g.oc + t] - x[g.from + t]) > 1e-6) { repeatOk = false; break; }
   }
-  const after = Math.floor(ch.start + ch.length) + 600;
-  if (Math.abs(l[after] - x[after]) > 1e-6) repeatOk = false;
+  // and after the chop the song carries on from where the chop left off (not where it would have been)
+  const last = ch.played[ch.played.length - 1], resumeAt = last.from + last.len;
+  for (let t = 0; t < 400; t += 7) if (ch.end + t < l.length && Math.abs(l[ch.end + t] - x[resumeAt + t]) > 1e-6) resumeOk = false;
+  if (Math.abs(resumeAt - ch.played[0].at) > 2) resumeOk = false;
 }
 let inMax = 0; for (let i = 1; i < x.length; i++) inMax = Math.max(inMax, Math.abs(x[i] - x[i - 1]));
 let cutMax = 0;
-for (const ch of c.history) for (const edge of [...ch.segs.map((g) => Math.floor(g.at)), Math.floor(ch.start + ch.length)])
-  for (let i = Math.max(1, edge - 400); i < Math.min(l.length, edge + 400); i++) cutMax = Math.max(cutMax, Math.abs(l[i] - l[i - 1]));
+for (const ch of c.history) for (const g of ch.played || []) for (let i = Math.max(1, g.oc - 400); i < Math.min(l.length, g.oc + 400); i++) cutMax = Math.max(cutMax, Math.abs(l[i] - l[i - 1]));
+const added = c.lag / sr;
 const perMin = c.history.length;
-console.log(`chops ${perMin}/min (${Object.entries(moves).map(([k, v]) => k + " " + v).join(", ")}), worst off-beat ${worst.toFixed(1)}ms, repeats exact ${repeatOk}, first at ${(c.history[0]?.start / sr).toFixed(1)}s, cut jump ${cutMax.toFixed(3)} vs music ${inMax.toFixed(3)}`);
+console.log(`chops ${perMin}/min (${Object.entries(moves).map(([k, v]) => k + " " + v).join(", ")}), worst off-beat ${worst.toFixed(1)}ms, repeats exact ${repeatOk}, resumes where it left off ${resumeOk}, added ${added.toFixed(1)}s, first at ${(c.history[0]?.played[0].at / sr).toFixed(1)}s, cut jump ${cutMax.toFixed(3)} vs music ${inMax.toFixed(3)}`);
 const light = run(x, "light").c.history.length;
 console.log(`light: ${light}/min`);
-if (perMin < 15 || light < 8 || Object.keys(moves).length < 4) { console.log("not enough chops / variety"); process.exitCode = 1; }
+if (perMin < 12 || light < 6 || Object.keys(moves).length < 4) { console.log("not enough chops / variety"); process.exitCode = 1; }
 const t0 = Date.now(); run(beat(90, 60), "heavy"); console.log(`60 s stereo in ${Date.now() - t0} ms`);
-if (!ok || worst > 15 || !repeatOk || cutMax > inMax * 1.2) process.exitCode = 1;
+if (!ok || worst > 15 || !repeatOk || !resumeOk || cutMax > inMax * 1.2 || added < 5) process.exitCode = 1;

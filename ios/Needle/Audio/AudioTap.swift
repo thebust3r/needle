@@ -1,6 +1,21 @@
 import AVFoundation
 import MediaToolbox
 
+/// One chopper for every song, so the time chops add to a song carries over into the start of the next one
+/// (it plays out first) instead of being cut off when the song file ends.
+final class ChopHub {
+    static let shared = ChopHub()
+    var chopper: Chopper?
+    /// Called from tap set-up (not the audio thread): makes the memory ahead of time.
+    func prepare(sampleRate: Double, channels: Int) {
+        if chopper == nil {      // a different rate is handled when that song actually plays (never swap mid-song)
+            let c = Chopper(sampleRate: sampleRate)
+            c.prepare(channels: channels)
+            chopper = c
+        }
+    }
+}
+
 /// Hooks into AVPlayer's audio as it plays (streamed or local) and runs it through the
 /// equalizer. One context per song; all of them read the shared EQ settings.
 final class TapContext {
@@ -13,8 +28,8 @@ final class TapContext {
     var gain: Float = 1
     var mono: [Float] = []
     var channelsInState = 0
-    var chopper: Chopper?
     var sinceStatus = 0
+    var songSecondsPerFrame: Double = 0     // how much of the song one frame here covers (depends on where the tap sits)
     var expectedStart: Double = -1          // where the next block should start in the song (to notice seeks)
 
     func rebuild(channels: Int) {
@@ -83,14 +98,26 @@ final class TapContext {
 
         // slowed & chopped: the beat tracker listens whenever screw mode is on, chops cut in on the beat
         let screw = ScrewSettings.shared
-        if screw.isOn || chopper?.active != nil {
-            if chopper == nil { chopper = Chopper(sampleRate: sampleRate) }
+        let hub = ChopHub.shared
+        if hub.chopper == nil || hub.chopper!.sampleRate != sampleRate { hub.chopper = Chopper(sampleRate: sampleRate) }   // rare: a song at a new sample rate
+        if let chopper = hub.chopper {
             let taps = screw.takeTaps()
-            if let m = taps.move { chopper?.trigger(m, hold: taps.hold) }
-            if taps.release { chopper?.release() }       // after the tap: a quick tap on Loop is one repeat
-            chopper?.process(channels, frames: frames, amount: screw.chops)
-            sinceStatus += frames
-            if sinceStatus >= Int(sampleRate), let c = chopper { sinceStatus = 0; screw.status = c.status }   // for the Screw sheet
+            if taps.reset { chopper.reset() }
+            if screw.isOn || chopper.active != nil || chopper.lag > 0 {
+                let lagBefore = chopper.lag
+                if let m = taps.move { chopper.trigger(m, hold: taps.hold) }
+                if taps.release { chopper.release() }       // after the tap: a quick tap on Loop is one repeat
+                chopper.process(channels, frames: frames, amount: screw.chops)
+                sinceStatus += frames
+                if sinceStatus >= Int(sampleRate) || chopper.lag != lagBefore && chopper.active == nil {   // for the Screw sheet and the player
+                    sinceStatus = 0
+                    var st = chopper.status
+                    st.lag = Double(chopper.lag) * (songSecondsPerFrame > 0 ? songSecondsPerFrame : 1 / sampleRate)
+                    screw.status = st
+                }
+            } else if taps.reset {
+                var st = chopper.status; st.lag = 0; screw.status = st
+            }
         }
 
         // send a copy to the spectrum display
@@ -118,9 +145,7 @@ private let tapPrepare: MTAudioProcessingTapPrepareCallback = { tap, maxFrames, 
     ctx.interleaved = asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
     ctx.mono = [Float](repeating: 0, count: max(4096, Int(maxFrames)))
     ctx.version = -1
-    let chopper = Chopper(sampleRate: asbd.mSampleRate)
-    chopper.prepare(channels: Int(asbd.mChannelsPerFrame))
-    ctx.chopper = chopper
+    ChopHub.shared.prepare(sampleRate: asbd.mSampleRate, channels: Int(asbd.mChannelsPerFrame))
 }
 
 private let tapUnprepare: MTAudioProcessingTapUnprepareCallback = { _ in }
@@ -129,11 +154,15 @@ private let tapProcess: MTAudioProcessingTapProcessCallback = { tap, frames, _, 
     var range = CMTimeRange.zero
     guard MTAudioProcessingTapGetSourceAudio(tap, frames, bufferList, flagsOut, &range, framesOut) == noErr else { return }
     let ctx = Unmanaged<TapContext>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
-    // a jump in the song (scrubbing): start the beat tracking and chop memory over
-    let start = range.start.seconds
-    if start.isFinite {
-        if ctx.expectedStart >= 0, abs(start - ctx.expectedStart) > 0.05 { ctx.chopper?.reset() }
-        ctx.expectedStart = start + Double(framesOut.pointee) / ctx.sampleRate
+    // a jump in the song (scrubbing): start the beat tracking and chop memory over. A new song's first block
+    // isn't a jump: whatever chops added to the last song plays out first.
+    let start = range.start.seconds, frames = Int(framesOut.pointee)
+    if start.isFinite, frames > 0 {
+        let dur = range.duration.seconds
+        if dur.isFinite, dur > 0 { ctx.songSecondsPerFrame = dur / Double(frames) }
+        let step = ctx.songSecondsPerFrame > 0 ? ctx.songSecondsPerFrame : 1 / ctx.sampleRate
+        if ctx.expectedStart >= 0, abs(start - ctx.expectedStart) > 0.05 { ChopHub.shared.chopper?.reset() }
+        ctx.expectedStart = start + Double(frames) * step
     }
     ctx.process(UnsafeMutableAudioBufferListPointer(bufferList), frames: Int(framesOut.pointee))
 }

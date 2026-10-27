@@ -32,12 +32,14 @@ class BeatTracker {
     this.sc = new Float64Array(this.maxLag + 2);
     this.ph = new Float64Array(this.maxLag + 2);
     this.hist = new Float32Array(16);
+    this.log = new Float64Array(512);            // beats already found, in song samples (chops play the past)
     this.reset();
   }
   reset() {
     this.envCount = 0; this.fill = 0; this.period = 0; this.anchor = 0; this.confidence = 0; this.samplesSeen = 0;
     this.sinceEstimate = 0; this.level = 0; this.env.fill(0); this.buf.fill(0); this.prevBands.fill(0); this.A.fill(0);
     this.hist.fill(0); this.histSum = 0; this.estimates = 0;
+    this.logCount = 0; this.logEnd = 0;
   }
   get bpm() { return this.period > 0 ? 60 * this.sampleRate / this.period : 0; }
   feed(x, count) {
@@ -149,8 +151,30 @@ class BeatTracker {
       let d = (newAnchor - this.anchor) % this.period; if (d > this.period / 2) d -= this.period; if (d < -this.period / 2) d += this.period;
       this.anchor = Math.abs(d) < this.period * 0.15 ? this.anchor + d * 0.5 : newAnchor;
     } else this.anchor = newAnchor;
+    // write down the beats that are settled now (a little behind the newest audio)
+    if (this.confidence > 0.15) {
+      const until = this.samplesSeen - 0.3 * this.sampleRate;
+      let b = this.grid(Math.max(this.logEnd, until - 4 * this.sampleRate));
+      while (b < until) {
+        const last = this.logCount ? this.log[(this.logCount - 1) % 512] : -Infinity;
+        if (b - last > this.period * 0.5) { this.log[this.logCount % 512] = b; this.logCount++; }
+        b += this.period;
+      }
+      this.logEnd = until;
+    }
   }
-  nextBeat(sample) { return this.period <= 0 ? null : this.anchor + Math.ceil((sample - this.anchor) / this.period) * this.period; }
+  grid(sample) { return this.anchor + Math.ceil((sample - this.anchor) / this.period) * this.period; }
+  /** The first beat at or after `sample`: from the beats already found if it's in the past, else from the grid. */
+  nextBeat(sample) {
+    if (this.period <= 0) return null;
+    const n = Math.min(this.logCount, 512);
+    if (n && sample <= this.log[(this.logCount - 1) % 512] && sample >= this.log[(this.logCount - n) % 512]) {
+      let k = this.logCount - 1;
+      while (k > this.logCount - n && this.log[(k - 1) % 512] >= sample) k--;
+      return this.log[k % 512];
+    }
+    return this.grid(sample);
+  }
 }
 
 // how often a chop can start (in beats) and how likely it is each time; heavy also picks the wilder moves more
@@ -173,10 +197,14 @@ const PICKS = {
 };
 
 class Chopper {
+  /* A playhead over a memory of the song. A chop jumps the playhead back a beat or two (with a 6 ms crossfade into the
+     jump, landing right on the beat), and the song then carries on from where the chop ends: every chop adds its
+     length to the song, like pausing the record and running it back. `lag` is how far behind the incoming audio
+     you are; the player plays that much more before moving to the next song. */
   constructor(sampleRate, seed) {
     this.sampleRate = sampleRate;
     this.tracker = new BeatTracker(sampleRate);
-    this.cap = Math.floor(sampleRate * 12);     // 12 s of memory: room to hold a loop for a few bars
+    this.cap = Math.floor(sampleRate * 90);      // 90 s of memory: chops can push the song back up to about a minute
     this.fade = Math.max(64, Math.floor(sampleRate * 0.006));
     this.rings = [];
     this.rng = (seed || Date.now()) >>> 0 || 1;
@@ -185,116 +213,134 @@ class Chopper {
   }
   reset() {
     this.tracker.reset();
-    this.written = 0; this.beatsSeen = 0; this.lastBeat = -1; this.active = null; this.history = []; this.cooldownUntil = 0; this.holding = false; this.queued = null;
+    this.wp = 0; this.rp = 0; this.oc = 0;       // write position, play position (both in song samples), samples played
+    this.beatsSeen = 0; this.lastBeat = -1; this.active = null; this.history = []; this.cooldownUntil = 0;
+    this.holding = false; this.frozen = false; this.resuming = 0;
     this.rings.forEach((r) => r.fill(0));
   }
+  get lag() { return this.wp - this.rp; }
   random() {   // xorshift32
     let x = this.rng; x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0;
     this.rng = x || 1;
     return this.rng / 4294967296;
   }
+  /** Paused: hold still (the song isn't coming in, so don't play ahead). Trailing silence from the pause is dropped. */
+  pause() {
+    if (this.frozen) return;
+    this.frozen = true;
+    const cap = this.cap, limit = Math.floor(0.25 * this.sampleRate);
+    let trimmed = 0;
+    while (trimmed < limit && this.wp - 1 > this.rp && this.rings.every((r) => r[(this.wp - 1) % cap] === 0)) { this.wp--; trimmed++; }
+  }
+  /** Playing again: skip the silence while the song starts back up (up to 1 s), so it doesn't show up later as a gap. */
+  play() { if (this.frozen) { this.frozen = false; this.resuming = this.sampleRate; } }
+
   process(channels, frames, amount) {
     if (!frames || !channels.length) return;
     while (this.rings.length < channels.length) this.rings.push(new Float32Array(this.cap));
-    const start = this.written, cap = this.cap;
-    channels.forEach((ch, c) => { const ring = this.rings[c]; let w = start % cap; for (let i = 0; i < frames; i++) { ring[w] = ch[i]; if (++w === cap) w = 0; } });
-    this.tracker.feed(channels[0], frames);
-    this.written += frames;
+    const cap = this.cap;
+    if (this.frozen) { for (const ch of channels) ch.fill(0, 0, frames); return; }
+    // 1. remember what came in (the record)
+    let write = true;
+    if (this.resuming > 0) {
+      const silent = channels.every((ch) => { for (let i = 0; i < frames; i++) if (ch[i] !== 0) return false; return true; });
+      if (silent) { write = false; this.resuming -= frames; } else this.resuming = 0;
+    }
+    if (write) {
+      channels.forEach((ch, c) => { const ring = this.rings[c]; let w = this.wp % cap; for (let i = 0; i < frames; i++) { ring[w] = ch[i]; if (++w === cap) w = 0; } });
+      this.tracker.feed(channels[0], frames);
+      this.wp += frames;
+    }
+    // 2. plan the next chop on an upcoming beat
     const conf = CHOPS[amount];
-    if (conf) this.plan(start, this.written, conf, amount);    // keeps counting beats even during a chop
-    const chop = this.active;
-    if (!chop) return;
-    // holding the loop pad: keep adding one more pass of the same beat just before the current one runs out
-    if (chop.loop && this.holding) {
-      const p = chop.segs[0].len, last = chop.segs[chop.segs.length - 1];   // the beat length it started with, so every pass is the same beat
-      if (chop.start + chop.length - this.written < Math.max(frames * 2, this.fade * 2) && last.delay + p < Math.min(this.cap - 8192, this.written)) {
-        chop.segs.push({ at: last.at + last.len, len: p, delay: last.delay + p });
-        chop.length += p;
-      } else if (last.delay + p >= this.cap - 8192) this.holding = false;
+    if (conf && !this.active) this.plan(frames, conf, amount);
+    // holding the loop pad: one more pass of the same beat just before the current one runs out
+    const A = this.active;
+    if (A && A.loop && this.holding && A.next >= A.jumps.length && A.end - this.oc < Math.max(frames * 2, this.fade * 2)) {
+      const p0 = A.jumps[0].J;
+      if (this.lag + p0 < cap - 8192 - frames) { A.jumps.push({ oc: A.end, J: p0 }); A.end += p0; } else this.holding = false;
     }
-    const f = this.fade, end = chop.start + chop.length;
-    if (start >= end + f) {
-      this.active = null; this.cooldownUntil = end + this.tracker.period;
-      if (this.queued) { const q = this.queued; this.queued = null; this.trigger(q.name, q.hold); }
-      return;
-    }
-    const segs = chop.segs;   // [{at, len, delay}] in samples
-    const delayAt = (n) => { for (const g of segs) if (n >= g.at && n < g.at + g.len) return g.delay; return 0; };
-    channels.forEach((ch, c) => {
-      const ring = this.rings[c];
-      const read = (n, d) => (d ? ring[(((n - d) % cap) + cap) % cap] : ch[n - start]);
-      for (let i = 0; i < frames; i++) {
-        const n = start + i;
-        if (n < chop.start || n >= end + f) continue;
-        const d = Math.round(delayAt(n));
-        // the cut before this sample: fade over 6 ms from what was playing to the new copy
-        let k = -1;
-        for (let j = 0; j < segs.length; j++) if (n >= segs[j].at && n < segs[j].at + f) k = j;
-        const after = n >= end && n < end + f;
-        let v = read(n, d);
-        if (k >= 0) {
-          const prevD = k === 0 ? 0 : Math.round(segs[k - 1].delay);
-          const m = (n - segs[k].at) / f;
-          v = read(n, prevD) * (1 - m) + v * m;
-        } else if (after) {
-          const m = (n - end) / f;
-          v = read(n, Math.round(segs[segs.length - 1].delay)) * (1 - m) + read(n, 0) * m;
-        }
-        ch[i] = v;
+    // 3. play from the playhead
+    const f = this.fade, nch = channels.length;
+    for (let i = 0; i < frames; i++) {
+      if (this.rp >= this.wp) { for (let c = 0; c < nch; c++) channels[c][i] = 0; continue; }   // waiting for the song to come back in
+      let J = 0, m = 0;
+      const a = this.active;
+      if (a && a.next < a.jumps.length) {
+        const j = a.jumps[a.next];
+        if (this.oc >= j.oc) {                           // the jump: land on the beat
+          const at = this.rp;
+          this.rp -= Math.round(j.J);
+          (a.played || (a.played = [])).push({ oc: this.oc, at, from: this.rp, len: (a.next + 1 < a.jumps.length ? a.jumps[a.next + 1].oc : a.end) - this.oc });
+          a.next++;
+        } else if (this.oc >= j.oc - f) { J = Math.round(j.J); m = (this.oc - (j.oc - f)) / f; }   // fading into it
       }
-    });
+      const r0 = this.rp % cap, r1 = (this.rp - J) % cap;
+      for (let c = 0; c < nch; c++) { const ring = this.rings[c]; channels[c][i] = J ? ring[r0] * (1 - m) + ring[r1] * m : ring[r0]; }
+      this.rp++; this.oc++;
+    }
+    if (A && A.next >= A.jumps.length && this.oc >= A.end && !(A.loop && this.holding)) {
+      this.active = null;
+      this.cooldownUntil = this.oc + this.tracker.period;
+      this.changed = true;                               // lag changed: tell the page
+    }
   }
 
-  /** Live mode: play a move now (or on the beat if it's only a moment away). Every cut goes back whole or half
-      beats, so it stays in time wherever you tap. Tapping during a chop lines the move up right after it.
-      Returns false if the beat isn't found yet. */
+  /** Moves as jumps for the playhead: [[length, delay], ...] in beats -> [{oc, J}] in samples, starting at `at`. */
+  jumpsFor(name, at, p) {
+    let prev = 0; const out = [];
+    for (const [len, delay] of MOVES[name]) { out.push({ oc: at, J: (delay - prev) * p }); prev = delay; at += len * p; }
+    return { jumps: out, end: at };
+  }
+  fits(extra) { return this.lag + extra < this.cap - 8192 - 4096 && extra <= this.rp; }
+
+  /** Live mode: play a move now (or on the beat if it's only a moment away). Tapping during a chop lines the move
+      up right after it. Returns false if the beat isn't found yet. */
   trigger(name, hold) {
-    const t = this.tracker, p = t.period, moves = MOVES[name];
-    if (!moves || !(p > 0) || t.confidence <= 0.15) return false;
-    const segsFrom = (at) => moves.map(([len, delay]) => { const g = { at, len: len * p, delay: delay * p }; at += len * p; return g; });
-    const a = this.active, now = this.written;
-    if (a && now < a.start + a.length - this.fade) {
-      if (a.length > 8 * p) return false;                       // don't stack up forever
-      const segs = segsFrom(a.start + a.length);
-      if (Math.max(...segs.map((g) => g.delay)) >= Math.min(this.cap - 8192, this.written)) return false;
-      a.segs.push(...segs);
-      a.length = segs[segs.length - 1].at + segs[segs.length - 1].len - a.start;
-      a.loop = name === "loop"; this.holding = !!hold;
+    const t = this.tracker, p = t.period;
+    if (!MOVES[name] || !(p > 0) || t.confidence <= 0.15) return false;
+    const a = this.active, f = this.fade;
+    if (a) {
+      if (a.jumps.length > 24) return false;                  // don't stack up forever
+      const start = Math.max(a.end, this.oc + f);
+      const { jumps, end } = this.jumpsFor(name, start, p);
+      const extra = jumps.reduce((s, j) => s + j.J, 0) + (a.end - this.oc);
+      if (!this.fits(extra)) return false;
+      a.jumps.push(...jumps); a.end = end; a.loop = name === "loop"; this.holding = !!hold;
       a.chain = (a.chain || 1) + 1;
       return true;
     }
-    if (a) { this.queued = { name, hold }; return true; }         // last few ms of a chop fading out: go right after
-    let at = now;
-    const b = t.nextBeat(at);
-    if (b !== null && b - at < 0.12 * this.sampleRate) at = b;   // snap to a beat that's about to land
-    const segs = segsFrom(at);
-    if (Math.max(...segs.map((g) => g.delay)) >= Math.min(this.cap - 8192, this.written)) return false;
-    this.active = { name, start: at, length: segs[segs.length - 1].at + segs[segs.length - 1].len - at, segs, live: true, loop: name === "loop" };
+    // land on a beat that's about to come (in the song as you hear it), else right away
+    let start = this.oc + f;
+    const pos = this.rp + f, nb = t.nextBeat(pos);
+    if (nb !== null && nb - pos < 0.12 * this.sampleRate) start = this.oc + Math.round(nb - this.rp);
+    const { jumps, end } = this.jumpsFor(name, start, p);
+    if (!this.fits(jumps.reduce((s, j) => s + j.J, 0))) return false;
+    this.active = { name, start, jumps, end, next: 0, live: true, loop: name === "loop" };
     this.holding = !!hold;
     this.history.push(this.active);
     if (this.history.length > 64) this.history.shift();
     return true;
   }
-  release() { this.holding = false; if (this.queued) this.queued.hold = false; }
+  release() { this.holding = false; }
 
-  plan(from, to, conf, amount) {
+  plan(frames, conf, amount) {
     const t = this.tracker;
     if (t.confidence <= 0.15 || t.period <= 0 || t.samplesSeen <= this.sampleRate * 4) return;
-    let beat = t.nextBeat(Math.max(from, this.lastBeat + t.period * 0.5));
-    const horizon = to + Math.max(this.fade * 2, Math.min(t.period * 0.5, 8192));
+    // beats in the song as you hear it (the playhead), counted as they go by
+    const horizon = this.rp + frames + Math.max(this.fade * 2, Math.min(t.period * 0.5, 8192));
+    let beat = t.nextBeat(Math.max(this.rp, this.lastBeat + t.period * 0.5));
     while (beat !== null && beat < horizon) {
       if (beat > this.lastBeat + t.period * 0.5) {
         this.lastBeat = beat;
         this.beatsSeen++;
-        if (!this.active && this.beatsSeen % conf.every === 0 && beat > to && beat >= (this.cooldownUntil || 0) && this.random() < conf.chance) {
-          const p = t.period;
+        const start = this.oc + Math.round(beat - this.rp);
+        if (this.beatsSeen % conf.every === 0 && beat - this.rp > this.fade && start >= this.cooldownUntil && this.random() < conf.chance) {
           let roll = this.random(), name = PICKS[amount][0][0];
           for (const [n, w] of PICKS[amount]) { if (roll < w) { name = n; break; } roll -= w; }
-          let at = beat;
-          const segs = MOVES[name].map(([len, delay]) => { const g = { at, len: len * p, delay: delay * p }; at += len * p; return g; });
-          const maxDelay = Math.max(...segs.map((g) => g.delay));
-          if (maxDelay < this.cap - 8192 && maxDelay < t.samplesSeen) {
-            this.active = { name, start: beat, length: at - beat, segs };
+          const { jumps, end } = this.jumpsFor(name, start, t.period);
+          if (this.fits(jumps.reduce((s, j) => s + j.J, 0))) {
+            this.active = { name, start, jumps, end, next: 0 };
             this.history.push(this.active);
             if (this.history.length > 64) this.history.shift();
             return;
@@ -313,27 +359,35 @@ if (typeof registerProcessor === "function") {
       this.amount = "off";
       this.chopper = new Chopper(sampleRate);
       this.lastReport = 0;
-      this.port.onmessage = (e) => {
-        if (e.data.amount) this.amount = e.data.amount;
-        if (e.data.reset) this.chopper.reset();
-        if (e.data.trigger) this.port.postMessage({ fired: e.data.trigger, ok: this.chopper.trigger(e.data.trigger, e.data.hold) });
-        if (e.data.release) this.chopper.release();
-      };
+      this.silence = [new Float32Array(128), new Float32Array(128)];
+      this.port.onmessage = (e) => handleChopMessage(this.chopper, e.data, (m) => this.port.postMessage(m), (a) => { this.amount = a; });
     }
     process(inputs, outputs) {
-      const input = inputs[0], output = outputs[0];
-      if (!input || !input.length) return true;
+      const input = inputs[0] && inputs[0].length ? inputs[0] : this.silence, output = outputs[0];
       for (let c = 0; c < output.length; c++) output[c].set(input[Math.min(c, input.length - 1)]);
-      if (this.amount !== "off" || this.chopper.active) this.chopper.process(output, output[0].length, this.amount);
-      if (currentFrame - this.lastReport > sampleRate) {   // tell the page what's going on, once a second
+      const c = this.chopper;
+      if (this.amount !== "off" || c.active || c.lag > 0 || c.frozen) c.process(output, output[0].length, this.amount);
+      if (c.changed || currentFrame - this.lastReport > sampleRate) {   // tell the page what's going on, once a second
+        c.changed = false;
         this.lastReport = currentFrame;
-        const t = this.chopper.tracker;
-        this.port.postMessage({ bpm: t.bpm, confidence: t.confidence, chops: this.chopper.history.length,
-                                last: this.chopper.history.length ? this.chopper.history[this.chopper.history.length - 1].name : null });
+        this.port.postMessage(chopStats(c));
       }
       return true;
     }
   }
   registerProcessor("needle-chop", ChopProcessor);
 }
-if (typeof module !== "undefined") module.exports = { BeatTracker, Chopper };
+function chopStats(c) {
+  const t = c.tracker, h = c.history;
+  return { bpm: t.bpm, confidence: t.confidence, chops: h.length, last: h.length ? h[h.length - 1].name : null, lag: c.lag / c.sampleRate };
+}
+/** Messages from the page (same for the audio thread and the page fallback). */
+function handleChopMessage(c, d, reply, setAmount) {
+  if (d.amount) setAmount(d.amount);
+  if (d.reset) { c.reset(); reply(chopStats(c)); }
+  if (d.pause === true) c.pause();
+  if (d.pause === false) c.play();
+  if (d.trigger) reply({ fired: d.trigger, ok: c.trigger(d.trigger, d.hold) });
+  if (d.release) c.release();
+}
+if (typeof module !== "undefined") module.exports = { BeatTracker, Chopper, chopStats, handleChopMessage };

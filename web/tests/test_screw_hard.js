@@ -28,9 +28,10 @@ function check(name, bpm, opts) {
   const c = new Chopper(sr, 11), l = Float32Array.from(x);
   for (let i = 0; i < x.length; i += 128) { const m = Math.min(128, x.length - i); c.process([l.subarray(i, i + m)], m, "heavy"); }
   let worst = 0;
-  for (const ch of c.history) { if (ch.start >= x.length) continue; const t = ch.start / sr; const d = Math.min(...beats.map((b) => Math.abs(b - t))); worst = Math.max(worst, d * 1000); }
+  const pos = (ch) => (ch.played ? ch.played[0].at : Infinity);   // where in the song the chop starts
+  for (const ch of c.history) { if (pos(ch) >= x.length) continue; const t = pos(ch) / sr; const d = Math.min(...beats.map((b) => Math.abs(b - t))); worst = Math.max(worst, d * 1000); }
   const ratio = c.tracker.bpm / bpm;
-  const bad = c.history.filter((ch) => ch.start < x.length && Math.min(...beats.map((b) => Math.abs(b - ch.start / sr))) > 0.02).map((ch) => (ch.start / sr).toFixed(2));
+  const bad = c.history.filter((ch) => pos(ch) < x.length && Math.min(...beats.map((b) => Math.abs(b - pos(ch) / sr))) > 0.02).map((ch) => (pos(ch) / sr).toFixed(2));
   if (bad.length) process.exitCode = 1;
   if (worst >= 20) process.exitCode = 1;
   console.log(`${name.padEnd(28)} found ${c.tracker.bpm.toFixed(1)} (x${ratio.toFixed(2)}) conf ${c.tracker.confidence.toFixed(2)} chops ${c.history.length} worst ${worst.toFixed(1)}ms ${worst < 20 ? "OK" : "BAD"}`);
@@ -65,7 +66,7 @@ check("slow 64", 64, {});
   const c = new Chopper(sr, 5), l = Float32Array.from(x);
   for (let i = 0; i < n; i += 128) { const m = Math.min(128, n - i); c.process([l.subarray(i, i + m)], m, "heavy"); }
   let worst = 0;
-  for (const ch of c.history) { if (ch.start >= n) continue; worst = Math.max(worst, Math.min(...beats.map((b) => Math.abs(b - ch.start / sr))) * 1000); }
+  for (const ch of c.history) { if (!ch.played || ch.played[0].at >= n) continue; worst = Math.max(worst, Math.min(...beats.map((b) => Math.abs(b - ch.played[0].at / sr))) * 1000); }
   const ratio = c.tracker.bpm / bpm;
   const ok = (Math.abs(ratio - 1) < 0.02 || Math.abs(ratio - 2) < 0.04 || Math.abs(ratio - 0.5) < 0.02) && c.history.length >= 10 && worst < 20;
   if (!ok) process.exitCode = 1;

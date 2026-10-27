@@ -225,7 +225,10 @@ const audio = {
     this.analyser.connect(this.ctx.destination);
     this.apply();
     // chops run on the audio thread, between the EQ and the meters
-    const onChopMessage = (d) => { if ("fired" in d) livePads.fired(d.fired, d.ok); else { screw.stats = d; livePads.status(); } };
+    const onChopMessage = (d) => {
+      if ("fired" in d) return livePads.fired(d.fired, d.ok);
+      screw.stats = d; this.lag = d.lag || 0; livePads.status();
+    };
     if (this.ctx.audioWorklet) {
       this.ctx.audioWorklet.addModule("chop-worklet.js").then(() => {
         const node = new AudioWorkletNode(this.ctx, "needle-chop", { outputChannelCount: [2] });
@@ -250,26 +253,18 @@ const audio = {
       sp.onaudioprocess = (e) => {
         const inp = e.inputBuffer, out = e.outputBuffer, n = inp.length, chans = [];
         for (let c = 0; c < out.numberOfChannels; c++) { const o = out.getChannelData(c); o.set(inp.getChannelData(Math.min(c, inp.numberOfChannels - 1))); chans.push(o); }
-        if (amount !== "off" || chopper.active) {
+        if (amount !== "off" || chopper.active || chopper.lag > 0 || chopper.frozen) {
           // same 128-sample steps as the audio thread, so beats and cuts line up the same way
           for (let i = 0; i < n; i += 128) chopper.process(chans.map((ch) => ch.subarray(i, i + 128)), Math.min(128, n - i), amount);
         }
         frames += n;
-        if (frames - lastReport > ctx.sampleRate) {
-          lastReport = frames;
-          const t = chopper.tracker, h = chopper.history;
-          onMessage({ bpm: t.bpm, confidence: t.confidence, chops: h.length, last: h.length ? h[h.length - 1].name : null });
-        }
+        if (chopper.changed || frames - lastReport > ctx.sampleRate) { chopper.changed = false; lastReport = frames; onMessage(chopStats(chopper)); }
       };
       this.pre.disconnect();
       this.pre.connect(sp);
       sp.connect(this.vizAnalyser);
-      this.chop = { node: sp, port: { postMessage: (d) => {
-        if (d.amount) amount = d.amount;
-        if (d.reset) chopper.reset();
-        if (d.trigger) setTimeout(() => onMessage({ fired: d.trigger, ok: chopper.trigger(d.trigger, d.hold) }));
-        if (d.release) chopper.release();
-      } } };
+      const reply = (m) => setTimeout(() => onMessage(m));
+      this.chop = { node: sp, port: { postMessage: (d) => handleChopMessage(chopper, d, reply, (a) => { amount = a; }) } };
       this.setChops(screw.chops);
     };
     if (typeof Chopper !== "undefined") return start();
@@ -279,7 +274,10 @@ const audio = {
     document.head.appendChild(sc);
   },
   setChops(amount) { if (this.chop) this.chop.port.postMessage({ amount }); },
-  resetChops() { if (this.chop) this.chop.port.postMessage({ reset: true }); },
+  lag: 0,                // seconds you're behind the song because of chops (they push the rest of the song back)
+  resetChops() { this.lag = 0; if (this.chop) this.chop.port.postMessage({ reset: true }); },
+  /** Paused: the chopper holds its place instead of playing on from memory. */
+  holdChops(paused) { if (this.chop) this.chop.port.postMessage({ pause: paused }); },
   /** Live mode: play a chop move now. */
   trigger(move, hold) { if (this.chop) this.chop.port.postMessage({ trigger: move, hold: !!hold }); },
   release() { if (this.chop) this.chop.port.postMessage({ release: true }); },
@@ -385,6 +383,7 @@ const player = {
   start(at = 0) {
     const t = this.current;
     if (!t) return;
+    this.stopTail();
     this.drop(this.el);
     if (this.next && this.nextIndex === this.i && this.next.routed === screw.routed) {
       this.el = this.next;
@@ -397,8 +396,9 @@ const player = {
     this.scrobbled = false;
     el.ontimeupdate = () => { if (el === this.el) this.onTime(); };
     el.onended = () => { if (el === this.el) this.ended(); };
+    el.onplay = () => { if (el === this.el) audio.holdChops(false); };
     el.onplaying = () => { if (el === this.el) { this.playing = true; ui.update(); } };
-    el.onpause = () => { if (el === this.el && !el.ended) { this.playing = false; ui.update(); } };
+    el.onpause = () => { if (el === this.el && !el.ended) { audio.holdChops(true); this.playing = false; ui.update(); } };
     el.oncanplaythrough = () => { if (el === this.el) this.preload(); };
     el.onerror = () => {
       if (el !== this.el) return;
@@ -422,7 +422,7 @@ const player = {
     this.start(this.resumeAt || 0);
   },
 
-  drop(el) { if (el) { el.onpause = el.onended = el.ontimeupdate = el.onerror = null; el.pause(); el.removeAttribute("src"); el.load(); } },
+  drop(el) { if (el) { el.onplay = el.onpause = el.onended = el.ontimeupdate = el.onerror = null; el.pause(); el.removeAttribute("src"); el.load(); } },
 
   nextIdx(wrap) {
     if (this.i + 1 < this.queue.length) return this.i + 1;
@@ -437,16 +437,45 @@ const player = {
     this.nextIndex = ni;
   },
 
-  ended() {
-    if (this.repeat === "one") { this.el.currentTime = 0; this.el.play(); return; }
+  ended(afterTail) {
+    // chops pushed the song back: play the rest of it before moving on
+    const tail = screw.routed && !afterTail ? audio.lag : 0;
+    if (tail > 0.05 && !this.tailTimer) {
+      const el = this.el, until = performance.now() + tail * 1000;
+      this.tailUntil = until;
+      const tick = setInterval(() => ui.progress(), 250);
+      this.tailTimer = setTimeout(() => {
+        clearInterval(tick); this.tailTimer = 0; this.tailUntil = 0;
+        if (el === this.el && this.playing) this.ended(true);
+      }, tail * 1000);
+      this.tailTick = tick;
+      return;
+    }
+    if (this.repeat === "one") { audio.resetChops(); this.el.currentTime = 0; this.el.play(); return; }
     const ni = this.nextIdx(false);
     if (ni < 0) { this.playing = false; this.el.currentTime = 0; ui.update(); return; }
     this.i = ni;
     this.start();
   },
 
+  stopTail() {
+    if (this.tailTimer) { clearTimeout(this.tailTimer); clearInterval(this.tailTick); this.tailTimer = 0; this.tailUntil = 0; }
+  },
   toggle() {
     if (!this.el) return this.resume();
+    if (this.tailTimer) {      // pausing during the last bit after the song "ended": pick it back up from there later
+      const left = Math.max(0, this.tailUntil - performance.now()) / 1000;
+      this.stopTail();
+      audio.holdChops(true); this.playing = false; ui.update();
+      this.tailLeft = left;
+      return;
+    }
+    if (this.tailLeft) {
+      const left = this.tailLeft; this.tailLeft = 0;
+      audio.holdChops(false); this.playing = true; audio.lag = left; ui.update();
+      this.ended();     // waits out what's left of it
+      return;
+    }
     audio.ensure();
     if (this.el.paused) { this.el.play().catch(() => {}); this.playing = true; }
     else { this.el.pause(); this.playing = false; }
@@ -455,15 +484,23 @@ const player = {
   skip() { const ni = this.nextIdx(true); if (ni >= 0) { this.i = ni; this.start(); } },
   prev() {
     if (!this.el) return;
-    if (this.el.currentTime > 3 || this.i === 0) this.el.currentTime = 0;
+    if (this.time() > 3 || this.i === 0) { this.stopTail(); this.tailLeft = 0; audio.resetChops(); this.el.currentTime = 0; if (this.el.paused) this.el.play().catch(() => {}); this.playing = true; ui.update(); }
     else { this.i -= 1; this.start(); }
   },
   seek(s) {
+    this.stopTail(); this.tailLeft = 0;
     audio.resetChops();
     if (this.el) this.el.currentTime = clamp(s, 0, (this.duration() || 0) - 0.5);
     else { this.resumeAt = Math.max(0, s); ui.progress(); }
   },
-  time() { return this.el ? this.el.currentTime : (this.resumeAt || 0); },
+  /** Where you are in the song as you hear it (chops push the song back a little each time). */
+  time() {
+    if (!this.el) return this.resumeAt || 0;
+    const behind = screw.routed ? audio.lag * screw.rate : 0;
+    if (this.tailUntil) return Math.max(0, this.duration() - Math.max(0, this.tailUntil - performance.now()) / 1000 * screw.rate);
+    if (this.tailLeft) return Math.max(0, this.duration() - this.tailLeft * screw.rate);
+    return Math.max(0, this.el.currentTime - behind);
+  },
   duration() {
     const d = this.el?.duration;
     return isFinite(d) && d > 0 ? d : (this.current?.duration || 0);
@@ -498,7 +535,7 @@ const player = {
   /** Re-creates the current song's audio so turning the EQ on/off takes effect right away. */
   reroute() {
     if (!this.el || this.el.routed === screw.routed) return;
-    const at = this.el.currentTime, wasPlaying = !this.el.paused;
+    const at = this.time(), wasPlaying = !this.el.paused;
     this.start(at);
     if (!wasPlaying) setTimeout(() => this.el && this.el.pause(), 50);
   },

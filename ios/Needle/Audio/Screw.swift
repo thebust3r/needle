@@ -89,6 +89,8 @@ struct ScrewStatus: Equatable {
     var confidence: Double = 0
     var chops = 0
     var last: ChopMove?
+    /// Seconds (of the song) you're behind it because of chops; the player plays that much more before moving on.
+    var lag: Double = 0
     var locked: Bool { confidence > 0.15 && bpm > 0 }
 }
 
@@ -119,15 +121,18 @@ final class ScrewSettings: @unchecked Sendable {
     private var _pending: ChopMove?
     private var _pendingHold = false
     private var _release = false
+    private var _reset = false
+    /// The player jumped (skip, seek, new queue): start the chops fresh instead of carrying on.
+    func requestReset() { os_unfair_lock_lock(&lock); _reset = true; _pending = nil; os_unfair_lock_unlock(&lock) }
     func tap(_ move: ChopMove, hold: Bool = false) {
         os_unfair_lock_lock(&lock); _pending = move; _pendingHold = hold; _release = false; os_unfair_lock_unlock(&lock)
     }
     func release() { os_unfair_lock_lock(&lock); _release = true; os_unfair_lock_unlock(&lock) }
     /// Audio thread: what was tapped since last time.
-    func takeTaps() -> (move: ChopMove?, hold: Bool, release: Bool) {
+    func takeTaps() -> (move: ChopMove?, hold: Bool, release: Bool, reset: Bool) {
         os_unfair_lock_lock(&lock); defer { os_unfair_lock_unlock(&lock) }
-        let r = (_pending, _pendingHold, _release)
-        _pending = nil; _release = false
+        let r = (_pending, _pendingHold, _release, _reset)
+        _pending = nil; _release = false; _reset = false
         return r
     }
 
@@ -170,6 +175,9 @@ final class BeatTracker {
     private var estimates = 0
     private let minLag: Int, maxLag: Int
     private(set) var level: Float = 0        // slow running loudness
+    private var log = [Double](repeating: 0, count: 512)   // beats already found, in song samples (chops play the past)
+    private var logCount = 0
+    private var logEnd = 0.0
 
     // tuning (same as the web)
     private let ema = 0.96, center = 107.0, sigma = 0.6, hyst = 1.12, combBeats = 12, conf0 = 0.06, conf1 = 0.2
@@ -206,7 +214,7 @@ final class BeatTracker {
 
     func reset() {
         envCount = 0; fill = 0; period = 0; anchor = 0; confidence = 0; samplesSeen = 0; sinceEstimate = 0; level = 0
-        estimates = 0; histSum = 0
+        estimates = 0; histSum = 0; logCount = 0; logEnd = 0
         for i in env.indices { env[i] = 0 }
         for i in buf.indices { buf[i] = 0 }
         for i in prevBands.indices { prevBands[i] = 0 }
@@ -356,63 +364,90 @@ final class BeatTracker {
         } else {
             anchor = newAnchor
         }
+        // write down the beats that are settled now (a little behind the newest audio)
+        if confidence > 0.15 {
+            let until = Double(samplesSeen) - 0.3 * sampleRate
+            var b = grid(max(logEnd, until - 4 * sampleRate))
+            while b < until {
+                let last = logCount > 0 ? log[(logCount - 1) % 512] : -Double.infinity
+                if b - last > period * 0.5 { log[logCount % 512] = b; logCount += 1 }
+                b += period
+            }
+            logEnd = until
+        }
     }
 
-    /// The first beat at or after `sample`.
+    private func grid(_ sample: Double) -> Double { anchor + ((sample - anchor) / period).rounded(.up) * period }
+
+    /// The first beat at or after `sample`: from the beats already found if it's in the past, else from the grid.
     func nextBeat(atOrAfter sample: Double) -> Double? {
         guard period > 0 else { return nil }
-        let k = ((sample - anchor) / period).rounded(.up)
-        return anchor + k * period
+        let n = min(logCount, 512)
+        if n > 0, sample <= log[(logCount - 1) % 512], sample >= log[(logCount - n) % 512] {
+            var k = logCount - 1
+            while k > logCount - n, log[(k - 1) % 512] >= sample { k -= 1 }
+            return log[k % 512]
+        }
+        return grid(sample)
     }
 }
 
 // MARK: - Chops
 
-/// Copies of the song a little behind the live one: cutting to a late copy repeats what just played,
-/// cutting back catches up. Cuts land on the beat and fade over 6 ms so they never click.
+/// A playhead over a memory of the song. A chop jumps the playhead back a beat or two (with a 6 ms crossfade into the
+/// jump, landing right on the beat), and the song then carries on from where the chop ends: every chop adds its length
+/// to the song, like pausing the record and running it back. `lag` is how far behind the incoming audio you are.
+/// Same as the web player's chop-worklet.js.
 final class Chopper {
-    struct Cut: Equatable { var at: Double; var length: Double; var delay: Double }   // in samples
+    struct Jump: Equatable { var oc: Int; var J: Double }                     // when (samples played) and how far back
+    struct Played: Equatable { var oc: Int; var at: Int; var from: Int; var len: Int }   // for tests and the status line
     struct Chop: Equatable {
         var move: ChopMove
-        var start: Double
-        var length: Double
-        var cuts: [Cut]
+        var start: Int
+        var jumps: [Jump]
+        var end: Int
+        var next = 0
+        var played: [Played] = []
     }
 
     let sampleRate: Double
     let tracker: BeatTracker
     private var rings: [[Float]] = []
     private let cap: Int
-    private var written = 0                     // samples written per channel (absolute index)
+    private(set) var wp = 0          // write position (song samples)
+    private(set) var rp = 0          // play position (song samples)
+    private(set) var oc = 0          // samples played
     private var beatsSeen = 0
-    private var lastBeatCounted: Double = -1
-    private var cooldownUntil: Double = 0
-    private(set) var holding = false
-    private var queued: (ChopMove, Bool)?
+    private var lastBeat: Double = -1
+    private var cooldownUntil = 0
     private var rng: UInt64
     private let fade: Int
+    private(set) var holding = false
     private(set) var active: Chop?
-    private(set) var history: [Chop] = []        // for tests and the status line
+    private(set) var history: [Chop] = []
     private(set) var count = 0
 
-    init(sampleRate: Double, seed: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)) {
+    var lag: Int { wp - rp }
+
+    init(sampleRate: Double, seed: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000), seconds: Double = 90) {
         self.sampleRate = sampleRate
         tracker = BeatTracker(sampleRate: sampleRate)
-        cap = Int(sampleRate * 12)               // 12 s of memory: room to hold a loop for a few bars
+        cap = Int(sampleRate * seconds)            // memory: chops can push the song back up to about a minute
         fade = max(64, Int(sampleRate * 0.006))
         rng = seed | 1
         history.reserveCapacity(65)
     }
 
-    /// Sets up memory ahead of time (called before playback starts, not on the audio thread).
+    /// Sets up memory ahead of time (not on the audio thread).
     func prepare(channels: Int) {
         if rings.count != channels { rings = Array(repeating: [Float](repeating: 0, count: cap), count: max(1, channels)) }
     }
+    var channelCount: Int { rings.count }
 
     func reset() {
         tracker.reset()
-        written = 0; beatsSeen = 0; lastBeatCounted = -1; cooldownUntil = 0; active = nil; holding = false; queued = nil; history.removeAll(keepingCapacity: true); count = 0
-        for c in rings.indices { for i in rings[c].indices { rings[c][i] = 0 } }
+        wp = 0; rp = 0; oc = 0; beatsSeen = 0; lastBeat = -1; cooldownUntil = 0; active = nil; holding = false
+        history.removeAll(keepingCapacity: true); count = 0
     }
 
     var status: ScrewStatus { ScrewStatus(bpm: tracker.bpm, confidence: tracker.confidence, chops: count, last: history.last?.move) }
@@ -426,110 +461,107 @@ final class Chopper {
     func process(_ channels: [(UnsafeMutablePointer<Float>, Int)], frames: Int, amount: ChopAmount) {
         guard frames > 0, let first = channels.first else { return }
         if rings.count != channels.count { rings = Array(repeating: [Float](repeating: 0, count: cap), count: channels.count) }
-        let blockStart = written
-
-        // remember the incoming audio (the "second record")
+        // 1. remember what came in (the record)
         for (c, (p, stride)) in channels.enumerated() {
             rings[c].withUnsafeMutableBufferPointer { ring in
-                var w = blockStart % cap
-                for i in 0..<frames {
-                    ring[w] = p[i * stride]
-                    w += 1; if w == cap { w = 0 }
-                }
+                var w = wp % cap
+                for i in 0..<frames { ring[w] = p[i * stride]; w += 1; if w == cap { w = 0 } }
             }
         }
         tracker.feed(first.0, count: frames, stride: first.1)
-        written += frames
-
-        // keep counting beats (even during a chop) and plan the next chop on an upcoming beat
-        if amount != .off { plan(from: Double(blockStart), to: Double(written), amount: amount) }
-
-        guard var chop = active else { return }
-        // holding the loop pad: add one more pass of the same beat just before the current one runs out
-        if chop.move == .loop, holding, let last = chop.cuts.last {
-            let p = chop.cuts[0].length          // the beat length it started with, so every pass is the same beat
-            if chop.start + chop.length - Double(written) < Double(max(frames * 2, fade * 2)),
-               last.delay + p < min(Double(cap - 8192), Double(written)) {
-                chop.cuts.append(Cut(at: last.at + last.length, length: p, delay: last.delay + p))
-                chop.length += p
-                update(chop)
-            } else if last.delay + p >= Double(cap - 8192) { holding = false }
+        wp += frames
+        // 2. plan the next chop on an upcoming beat
+        if active == nil, !amount.picks.isEmpty { plan(frames: frames, amount: amount) }
+        // holding the loop pad: one more pass of the same beat just before the current one runs out
+        if var a = active, a.move == .loop, holding, a.next >= a.jumps.count, a.end - oc < max(frames * 2, fade * 2) {
+            let p0 = a.jumps[0].J
+            if Double(lag) + p0 < Double(cap - 8192 - frames) {
+                a.jumps.append(Jump(oc: a.end, J: p0)); a.end += Int(p0.rounded()); update(a)
+            } else { holding = false }
         }
+        // 3. play from the playhead (every channel walks the same jumps)
         let f = fade
-        let end = chop.start + chop.length
-        if Double(blockStart) >= end + Double(f) {
-            active = nil; cooldownUntil = end + tracker.period
-            if let q = queued { queued = nil; _ = trigger(q.0, hold: q.1) }
-            return
-        }
-        let s0 = Int(chop.start.rounded()), e0 = Int(end.rounded())
-        let cuts = chop.cuts
-        let lastD = Int(cuts[cuts.count - 1].delay.rounded())
+        let jl = active?.jumps ?? [], aEnd = active?.end ?? 0, next0 = active?.next ?? 0
+        var played: [Played] = []
+        var rpEnd = rp, ocEnd = oc, nextEnd = next0
         for (c, (p, stride)) in channels.enumerated() {
+            var rpc = rp, occ = oc, next = next0
             rings[c].withUnsafeBufferPointer { ring in
-                @inline(__always) func read(_ n: Int, _ d: Int, _ live: Float) -> Float { d == 0 ? live : ring[((n - d) % cap + cap) % cap] }
-                // cuts follow one after another, so walk through them with a cursor
-                var j = 0
-                var a = Int(cuts[0].at.rounded()), d = Int(cuts[0].delay.rounded()), prevD = 0
                 for i in 0..<frames {
-                    let n = blockStart + i
-                    guard n >= s0, n < e0 + f else { continue }
-                    let live = p[i * stride]
-                    if n < e0 {
-                        while j + 1 < cuts.count, n >= Int(cuts[j + 1].at.rounded()) {
-                            j += 1; prevD = d
-                            a = Int(cuts[j].at.rounded()); d = Int(cuts[j].delay.rounded())
+                    var J = 0, m: Float = 0
+                    if next < jl.count {
+                        let j = jl[next]
+                        if occ >= j.oc {                                   // the jump: land on the beat
+                            let jr = Int(j.J.rounded())
+                            if c == 0 {
+                                let len = (next + 1 < jl.count ? jl[next + 1].oc : aEnd) - occ
+                                played.append(Played(oc: occ, at: rpc, from: rpc - jr, len: len))
+                            }
+                            rpc -= jr
+                            next += 1
+                        } else if occ >= j.oc - f {                        // fading into it
+                            J = Int(j.J.rounded()); m = Float(occ - (j.oc - f)) / Float(f)
                         }
-                        var v = read(n, d, live)
-                        if n < a + f {
-                            // the cut before this sample: fade over 6 ms from what was playing to the new copy
-                            let m = Float(n - a) / Float(f)
-                            v = read(n, prevD, live) * (1 - m) + v * m
-                        }
-                        p[i * stride] = v
-                    } else {
-                        let m = Float(n - e0) / Float(f)                                  // fade back to live
-                        p[i * stride] = read(n, lastD, live) * (1 - m) + live * m
                     }
+                    let r0 = rpc % cap
+                    if J != 0 {
+                        let r1 = ((rpc - J) % cap + cap) % cap
+                        p[i * stride] = ring[r0] * (1 - m) + ring[r1] * m
+                    } else {
+                        p[i * stride] = ring[r0]
+                    }
+                    rpc += 1; occ += 1
                 }
             }
+            rpEnd = rpc; ocEnd = occ; nextEnd = next
+        }
+        rp = rpEnd; oc = ocEnd
+        if active != nil { active!.next = nextEnd; if !played.isEmpty { active!.played += played } }
+        if let a = active, a.next >= a.jumps.count, oc >= a.end, !(a.move == .loop && holding) {
+            if let i = history.indices.last, history[i].start == a.start { history[i] = a }
+            active = nil
+            cooldownUntil = oc + Int(tracker.period)
         }
     }
 
-    /// Live mode: play a move now (or on the beat if it's only a moment away). Every cut goes back whole or half
-    /// beats, so it stays in time wherever you tap. Tapping during a chop lines the move up right after it.
-    /// Returns false if the beat isn't found yet.
+    private func update(_ c: Chop) {
+        if let i = history.indices.last, let a = active, history[i].start == a.start { history[i] = c }
+        active = c
+    }
+
+    /// A move as jumps for the playhead, starting at `at` (samples played).
+    private func jumps(_ move: ChopMove, at start: Int, period p: Double) -> (jumps: [Jump], end: Int) {
+        var prev = 0.0, at = Double(start), out: [Jump] = []
+        for (len, delay) in move.cuts { out.append(Jump(oc: Int(at.rounded()), J: (delay - prev) * p)); prev = delay; at += len * p }
+        return (out, Int(at.rounded()))
+    }
+    private func fits(_ extra: Double) -> Bool { Double(lag) + extra < Double(cap - 8192 - 4096) && extra <= Double(rp) }
+
+    /// Live mode: play a move now (or on the beat if it's only a moment away). Tapping during a chop lines the move
+    /// up right after it. Returns false if the beat isn't found yet.
     @discardableResult
     func trigger(_ move: ChopMove, hold: Bool = false) -> Bool {
         let t = tracker, p = t.period
         guard p > 0, t.confidence > 0.15 else { return false }
-        let limit = min(Double(cap - 8192), Double(written))
-        func cuts(from start: Double) -> [Cut] {
-            var at = start, out: [Cut] = []
-            for (len, delay) in move.cuts { out.append(Cut(at: at, length: len * p, delay: delay * p)); at += len * p }
-            return out
-        }
-        let now = Double(written)
+        let f = fade
         if var a = active {
-            if now < a.start + a.length - Double(fade) {
-                guard a.length <= 8 * p else { return false }          // don't stack up forever
-                let more = cuts(from: a.start + a.length)
-                guard (more.map(\.delay).max() ?? 0) < limit else { return false }
-                a.cuts += more
-                a.length = more[more.count - 1].at + more[more.count - 1].length - a.start
-                if move == .loop { a.move = .loop }
-                update(a)
-                holding = hold
-                return true
-            }
-            queued = (move, hold)                                      // last few ms of a chop fading out: go right after
+            guard a.jumps.count <= 24 else { return false }            // don't stack up forever
+            let start = max(a.end, oc + f)
+            let (more, end) = jumps(move, at: start, period: p)
+            guard fits(more.reduce(0) { $0 + $1.J } + Double(a.end - oc)) else { return false }
+            a.jumps += more; a.end = end
+            if move == .loop { a.move = .loop }
+            holding = hold
+            update(a)
             return true
         }
-        var at = now
-        if let b = t.nextBeat(atOrAfter: at), b - at < 0.12 * sampleRate { at = b }   // snap to a beat that's about to land
-        let c = cuts(from: at)
-        guard (c.map(\.delay).max() ?? 0) < limit else { return false }
-        let chop = Chop(move: move, start: at, length: c[c.count - 1].at + c[c.count - 1].length - at, cuts: c)
+        // land on a beat that's about to come (in the song as you hear it), else right away
+        var start = oc + f
+        let pos = Double(rp + f)
+        if let nb = t.nextBeat(atOrAfter: pos), nb - pos < 0.12 * sampleRate { start = oc + Int((nb - Double(rp)).rounded()) }
+        let (j, end) = jumps(move, at: start, period: p)
+        guard fits(j.reduce(0) { $0 + $1.J }) else { return false }
+        let chop = Chop(move: move, start: start, jumps: j, end: end)
         active = chop
         holding = hold
         history.append(chop)
@@ -538,36 +570,26 @@ final class Chopper {
         return true
     }
 
-    /// Changes the chop that's playing (and its history entry, so tests and the status see the whole thing).
-    private func update(_ c: Chop) {
-        if let i = history.indices.last, let a = active, history[i].start == a.start { history[i] = c }
-        active = c
-    }
+    func release() { holding = false }
 
-    func release() { holding = false; if queued != nil { queued?.1 = false } }
-
-    private func plan(from: Double, to: Double, amount: ChopAmount) {
-        guard !amount.picks.isEmpty else { return }
+    private func plan(frames: Int, amount: ChopAmount) {
         let t = tracker
         guard t.confidence > 0.15, t.period > 0, t.samplesSeen > Int(sampleRate * 4) else { return }
-        guard var beat = t.nextBeat(atOrAfter: max(from, lastBeatCounted + t.period * 0.5)) else { return }
-        // plan just ahead (fresh beat estimates), but far enough to cover the next audio block
-        let horizon = to + max(Double(fade * 2), min(t.period * 0.5, 8192))
+        // beats in the song as you hear it (the playhead), counted as they go by
+        let horizon = Double(rp + frames) + max(Double(fade * 2), min(t.period * 0.5, 8192))
+        guard var beat = t.nextBeat(atOrAfter: max(Double(rp), lastBeat + t.period * 0.5)) else { return }
         while beat < horizon {
-            if beat > lastBeatCounted + t.period * 0.5 {
-                lastBeatCounted = beat
+            if beat > lastBeat + t.period * 0.5 {
+                lastBeat = beat
                 beatsSeen += 1
-                if active == nil, beatsSeen % amount.every == 0, beat > to, beat >= cooldownUntil, random() < amount.chance {
-                    let p = t.period
+                let start = oc + Int((beat - Double(rp)).rounded())
+                if beatsSeen % amount.every == 0, beat - Double(rp) > Double(fade), start >= cooldownUntil, random() < amount.chance {
                     var roll = random()
                     var move = amount.picks[0].0
                     for (m, w) in amount.picks { if roll < w { move = m; break }; roll -= w }
-                    var at = beat
-                    var cuts: [Cut] = []
-                    for (len, delay) in move.cuts { cuts.append(Cut(at: at, length: len * p, delay: delay * p)); at += len * p }
-                    let maxDelay = cuts.map(\.delay).max() ?? 0
-                    if maxDelay < Double(cap - 8192), maxDelay < Double(t.samplesSeen) {
-                        let chop = Chop(move: move, start: beat, length: at - beat, cuts: cuts)
+                    let (j, end) = jumps(move, at: start, period: t.period)
+                    if fits(j.reduce(0) { $0 + $1.J }) {
+                        let chop = Chop(move: move, start: start, jumps: j, end: end)
                         active = chop
                         history.append(chop)
                         if history.count > 64 { history.removeFirst() }

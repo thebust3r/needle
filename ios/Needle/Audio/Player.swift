@@ -39,6 +39,9 @@ final class Player {
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var nowPlayingArt: MPMediaItemArtwork?
     @ObservationIgnored private var lastSavedSecond = -1
+    @ObservationIgnored private var userSkip = false          // the next song change was a skip, not the song ending
+    @ObservationIgnored private var tailToken = 0
+    @ObservationIgnored private var inTail = false            // still hearing the last song's chop-added time
 
     init() {
         av.actionAtItemEnd = .advance
@@ -188,9 +191,22 @@ final class Player {
         updateNowPlayingTime()
     }
 
+    /// Chops push the song back; seconds of the song you're behind by (0 when chops are off).
+    var chopLag: Double { ScrewSettings.shared.status.lag }
+
+    /// A jump (skip, seek, new song): chops start fresh, no carried-over time.
+    private func freshChops() {
+        ScrewSettings.shared.requestReset()
+        var st = ScrewSettings.shared.status; st.lag = 0; ScrewSettings.shared.status = st
+        tailToken += 1
+        inTail = false
+    }
+
     func next() {
         guard let ni = nextIndex(wrap: true) else { return }
+        freshChops()
         if let p = preloaded, p.index == ni, av.items().count > 1 {
+            userSkip = true
             av.advanceToNextItem()          // already buffered: instant
         } else {
             index = ni
@@ -224,6 +240,7 @@ final class Player {
 
     func seek(to seconds: Double) {
         let s = max(0, min(seconds, max(duration - 0.5, 0)))
+        freshChops()
         currentTime = s
         guard av.currentItem != nil else { return }
         seeking = true
@@ -272,6 +289,7 @@ final class Player {
 
     private func startCurrent(autoplay: Bool, at seconds: Double = 0) {
         guard let track = current else { return }
+        freshChops()
         loadToken += 1
         let token = loadToken
         av.removeAllItems()
@@ -356,6 +374,28 @@ final class Player {
 
     private func currentItemChanged() {
         guard let item = av.currentItem else { return }
+        guard let p = preloaded, p.item === item else { return }
+        // the song ended on its own but chops pushed it back: you're still hearing the end of it. Switch the screen
+        // over when you actually hear the next song.
+        let lag = chopLag, natural = !userSkip
+        userSkip = false
+        if natural, lag > 0.3 {
+            tailToken += 1
+            let token = tailToken
+            inTail = true
+            currentTime = duration
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(lag / Double(max(0.1, screwSpeed.rate))))
+                guard token == self.tailToken else { return }
+                self.inTail = false
+                self.switchedTo(item)
+            }
+            return
+        }
+        switchedTo(item)
+    }
+
+    private func switchedTo(_ item: AVPlayerItem) {
         if let p = preloaded, p.item === item {
             index = p.index
             preloaded = nil
@@ -410,8 +450,8 @@ final class Player {
     }
 
     private func tick(_ seconds: Double) {
-        guard !seeking, seconds.isFinite else { return }
-        currentTime = seconds
+        guard !seeking, !inTail, seconds.isFinite else { return }
+        currentTime = max(0, seconds - chopLag)     // where you are in the song as you hear it
         if Int(seconds) % 5 == 0, Int(seconds) != lastSavedSecond { lastSavedSecond = Int(seconds); saveSession() }
         if let d = av.currentItem?.duration.seconds, d.isFinite, d > 0, abs(d - duration) > 1 { duration = d }
         if !scrobbledCurrent, let t = current, !t.isLocal, duration > 0, seconds > min(duration * 0.5, 240) {
