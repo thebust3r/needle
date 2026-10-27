@@ -268,7 +268,7 @@ final class Chopper {
 
     func reset() {
         tracker.reset()
-        written = 0; nextChance = 0; beatsSeen = 0; lastBeatCounted = -1; active = nil
+        written = 0; nextChance = 0; beatsSeen = 0; lastBeatCounted = -1; active = nil; history.removeAll()
         for c in rings.indices { for i in rings[c].indices { rings[c][i] = 0 } }
     }
 

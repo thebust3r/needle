@@ -104,6 +104,39 @@ const eq = Object.assign({ gains: Array(10).fill(0), preamp: 0, enabled: true, g
 const saveEQ = () => store.set("eq", eq);
 const allPresets = () => PRESETS.concat(eq.custom);
 
+/* ============================================================
+   Slowed / chopped & screwed (same as the app: ios/Needle/Audio/Screw.swift)
+   ============================================================ */
+const SPEEDS = { off: ["Off", 1, "Normal speed"], slowed: ["Slowed", 0.88, "A little slower and deeper"], screwed: ["Screwed", 0.8, "DJ Screw speed"],
+                 syrup: ["Syrup", 0.72, "Extra slow and heavy"], spedUp: ["Sped Up", 1.18, "Faster and higher"] };
+const screw = {
+  speed: store.get("screwSpeed", "off"),
+  chops: store.get("screwChops", "off"),
+  stats: null,
+  get rate() { return (SPEEDS[this.speed] || SPEEDS.off)[1]; },
+  get routed() { return eq.enabled || this.chops !== "off"; },
+  label() {
+    const s = SPEEDS[this.speed][0];
+    if (this.speed === "off") return this.chops === "off" ? "" : "Chopped";
+    if (this.chops === "off") return s;
+    return this.speed === "screwed" || this.speed === "syrup" ? `${s} & Chopped` : `${s} + Chops`;
+  },
+  applyTo(el) {
+    if (!el) return;
+    el.preservesPitch = false; el.webkitPreservesPitch = false; el.mozPreservesPitch = false;   // slower = deeper, like a record
+    el.defaultPlaybackRate = this.rate;
+    el.playbackRate = this.rate;
+  },
+  set(speed, chops) {
+    if (speed) { this.speed = speed; store.set("screwSpeed", speed); }
+    if (chops) { this.chops = chops; store.set("screwChops", chops); }
+    this.applyTo(player.el); this.applyTo(player.next);
+    audio.setChops(this.chops);
+    player.reroute();
+    ui.update();
+  },
+};
+
 const audio = {
   ctx: null, filters: [], pre: null, analyser: null, vizAnalyser: null, freqData: null,
   ensure() {
@@ -132,7 +165,21 @@ const audio = {
     this.vizAnalyser.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
     this.apply();
+    // chops run on the audio thread, between the EQ and the meters
+    if (this.ctx.audioWorklet) {
+      this.ctx.audioWorklet.addModule("chop-worklet.js").then(() => {
+        const node = new AudioWorkletNode(this.ctx, "needle-chop", { outputChannelCount: [2] });
+        this.pre.disconnect();
+        this.pre.connect(node);
+        node.connect(this.vizAnalyser);
+        node.port.onmessage = (e) => { screw.stats = e.data; };
+        this.chop = node;
+        this.setChops(screw.chops);
+      }).catch(() => { /* older browser: everything else still works */ });
+    }
   },
+  setChops(amount) { if (this.chop) this.chop.port.postMessage({ amount }); },
+  resetChops() { if (this.chop) this.chop.port.postMessage({ reset: true }); },
   connect(el) {
     this.ensure();
     if (!this.ctx) return false;
@@ -209,7 +256,8 @@ const player = {
     const a = new Audio();
     a.preload = "auto";
     a.src = streamURL(t);
-    a.routed = eq.enabled ? audio.connect(a) : false;
+    a.routed = screw.routed ? audio.connect(a) : false;
+    screw.applyTo(a);
     return a;
   },
 
@@ -235,7 +283,7 @@ const player = {
     const t = this.current;
     if (!t) return;
     this.drop(this.el);
-    if (this.next && this.nextIndex === this.i && this.next.routed === eq.enabled) {
+    if (this.next && this.nextIndex === this.i && this.next.routed === screw.routed) {
       this.el = this.next;
     } else {
       this.drop(this.next);
@@ -259,6 +307,7 @@ const player = {
     el.play().catch(() => { this.playing = false; ui.update(); });
     this.session();
     this.resumeAt = 0;
+    audio.resetChops();
     if (window.onTrackStart) onTrackStart(t);
     ui.trackChanged();
   },
@@ -307,6 +356,7 @@ const player = {
     else { this.i -= 1; this.start(); }
   },
   seek(s) {
+    audio.resetChops();
     if (this.el) this.el.currentTime = clamp(s, 0, (this.duration() || 0) - 0.5);
     else { this.resumeAt = Math.max(0, s); ui.progress(); }
   },
@@ -344,7 +394,7 @@ const player = {
 
   /** Re-creates the current song's audio so turning the EQ on/off takes effect right away. */
   reroute() {
-    if (!this.el || this.el.routed === eq.enabled) return;
+    if (!this.el || this.el.routed === screw.routed) return;
     const at = this.el.currentTime, wasPlaying = !this.el.paused;
     this.start(at);
     if (!wasPlaying) setTimeout(() => this.el && this.el.pause(), 50);
@@ -469,6 +519,9 @@ const ui = {
     heart.hidden = !t || !!t.local;
     heart.classList.toggle("on", !!t?.starred);
     $("#np-heart use").setAttribute("href", t?.starred ? "#i-heartfill" : "#i-heart");
+    const sc = $("#np-screw"), lab = screw.label();
+    sc.classList.toggle("on", !!lab);
+    $("span", sc).textContent = lab;
     const chip = $("#np-eq");
     chip.classList.toggle("off", !eq.enabled);
     $("span", chip).textContent = eq.enabled ? eq.preset : "EQ Off";
@@ -1090,6 +1143,30 @@ $("#np-shuffle").onclick = () => player.toggleShuffle();
 $("#np-repeat").onclick = () => player.cycleRepeat();
 $("#np-heart").onclick = () => player.star(!player.current?.starred);
 $("#np-eq").onclick = openEQ;
+$("#np-screw").onclick = openScrew;
+function openScrew() {
+  const m = $("#menu");
+  const render = () => {
+    m.innerHTML = `<div class="panel screw-panel">
+      <h3>Chopped &amp; Screwed</h3><p class="sp-sub">Slow it down like a record, and let it cut back on the beat.</p>
+      <small>SPEED</small><div class="sp-grid">${Object.entries(SPEEDS).map(([k, [n, r, d]]) =>
+        `<button data-speed="${k}" class="${screw.speed === k ? "on" : ""}"><b>${n}</b><span>${k === "off" ? "Normal" : `${Math.round(r * 100)}% · ${d}`}</span></button>`).join("")}</div>
+      <small>CHOPS</small><div class="sp-row">${[["off", "None"], ["light", "Every few bars"], ["heavy", "Every other bar"]].map(([k, d]) =>
+        `<button data-chops="${k}" class="${screw.chops === k ? "on" : ""}"><b>${k[0].toUpperCase() + k.slice(1)}</b><span>${d}</span></button>`).join("")}</div>
+      <p class="sp-note">Chops follow the song's beat. They start a few seconds into each song, once Needle has found the rhythm.${!window.AudioWorkletNode ? " Chops need a newer browser." : ""}</p>
+      <button class="sp-done">Done</button></div>`;
+  };
+  render();
+  m.hidden = false;
+  m.onclick = (e) => {
+    if (e.target === m || e.target.closest(".sp-done")) { m.hidden = true; return; }
+    const b = e.target.closest("[data-speed], [data-chops]");
+    if (!b) return;
+    audio.ensure();
+    screw.set(b.dataset.speed, b.dataset.chops);
+    render();
+  };
+}
 $("#np-queue").onclick = () => { $("#queue").hidden = false; renderQueue(); };
 $("#np-more").onclick = () => player.current && showMenu(player.current.title, [player.current]);
 

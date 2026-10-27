@@ -123,7 +123,7 @@ class Chopper {
   }
   reset() {
     this.tracker.reset();
-    this.written = 0; this.beatsSeen = 0; this.lastBeat = -1; this.active = null;
+    this.written = 0; this.beatsSeen = 0; this.lastBeat = -1; this.active = null; this.history = [];
     this.rings.forEach((r) => r.fill(0));
   }
   random() {   // xorshift32
@@ -197,7 +197,7 @@ if (typeof registerProcessor === "function") {
       const input = inputs[0], output = outputs[0];
       if (!input || !input.length) return true;
       for (let c = 0; c < output.length; c++) output[c].set(input[Math.min(c, input.length - 1)]);
-      this.chopper.process(output, output[0].length, this.amount);
+      if (this.amount !== "off" || this.chopper.active) this.chopper.process(output, output[0].length, this.amount);
       if (currentFrame - this.lastReport > sampleRate) {   // tell the page what's going on, once a second
         this.lastReport = currentFrame;
         const t = this.chopper.tracker;

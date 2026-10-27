@@ -33,7 +33,8 @@ check("first run creates updates/installed, failed, backups and site", all(os.pa
 check("first run explains how to install", "drop the Needle web zip" in out)
 
 # 1. the real release zip
-rel = [f for f in os.listdir(f"{WEB}/dist") if f.endswith(".zip")][0]
+_ver = open(f"{WEB}/site/version.txt").read().strip()
+rel = f"Needle-web-v{_ver}.zip"
 shutil.copy(f"{WEB}/dist/{rel}", os.path.join(app, "updates", rel))
 out = run()
 check("release zip installs index.html, app.js, viz.js, lyrics.js", all(os.path.isfile(site(f)) for f in ("index.html", "app.js", "viz.js", "lyrics.js", "icons/icon-180.png")))
