@@ -13,6 +13,8 @@ final class TapContext {
     var gain: Float = 1
     var mono: [Float] = []
     var channelsInState = 0
+    var chopper: Chopper?
+    var expectedStart: Double = -1          // where the next block should start in the song (to notice seeks)
 
     func rebuild(channels: Int) {
         let snap = EQProcessor.shared.snapshot()
@@ -78,6 +80,13 @@ final class TapContext {
             }
         }
 
+        // slowed & chopped: the beat tracker listens whenever screw mode is on, chops cut in on the beat
+        let screw = ScrewSettings.shared
+        if screw.isOn || chopper?.active != nil {
+            if chopper == nil { chopper = Chopper(sampleRate: sampleRate) }
+            chopper?.process(channels, frames: frames, amount: screw.chops)
+        }
+
         // send a copy to the spectrum display
         if EQProcessor.shared.spectrumEnabled, frames <= mono.count {
             let (p, stride) = channels[0]
@@ -103,13 +112,23 @@ private let tapPrepare: MTAudioProcessingTapPrepareCallback = { tap, maxFrames, 
     ctx.interleaved = asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
     ctx.mono = [Float](repeating: 0, count: max(4096, Int(maxFrames)))
     ctx.version = -1
+    let chopper = Chopper(sampleRate: asbd.mSampleRate)
+    chopper.prepare(channels: Int(asbd.mChannelsPerFrame))
+    ctx.chopper = chopper
 }
 
 private let tapUnprepare: MTAudioProcessingTapUnprepareCallback = { _ in }
 
 private let tapProcess: MTAudioProcessingTapProcessCallback = { tap, frames, _, bufferList, framesOut, flagsOut in
-    guard MTAudioProcessingTapGetSourceAudio(tap, frames, bufferList, flagsOut, nil, framesOut) == noErr else { return }
+    var range = CMTimeRange.zero
+    guard MTAudioProcessingTapGetSourceAudio(tap, frames, bufferList, flagsOut, &range, framesOut) == noErr else { return }
     let ctx = Unmanaged<TapContext>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
+    // a jump in the song (scrubbing): start the beat tracking and chop memory over
+    let start = range.start.seconds
+    if start.isFinite {
+        if ctx.expectedStart >= 0, abs(start - ctx.expectedStart) > 0.05 { ctx.chopper?.reset() }
+        ctx.expectedStart = start + Double(framesOut.pointee) / ctx.sampleRate
+    }
     ctx.process(UnsafeMutableAudioBufferListPointer(bufferList), frames: Int(framesOut.pointee))
 }
 

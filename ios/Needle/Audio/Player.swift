@@ -42,6 +42,7 @@ final class Player {
 
     init() {
         av.actionAtItemEnd = .advance
+        av.defaultRate = ScrewSettings.shared.speed.rate
         av.automaticallyWaitsToMinimizeStalling = true
         timeObserver = av.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { [weak self] t in
             MainActor.assumeIsolated { self?.tick(t.seconds) }
@@ -67,6 +68,25 @@ final class Player {
         }
         setupRemoteCommands()
         restoreSession()
+    }
+
+    // MARK: - Slowed / chopped & screwed
+
+    private(set) var screwSpeed: ScrewSpeed = ScrewSettings.shared.speed
+    private(set) var chops: ChopAmount = ScrewSettings.shared.chops
+
+    func setScrew(speed: ScrewSpeed? = nil, chops: ChopAmount? = nil) {
+        if let speed {
+            ScrewSettings.shared.speed = speed
+            screwSpeed = speed
+            av.defaultRate = speed.rate
+            if isPlaying { av.rate = speed.rate }
+        }
+        if let chops {
+            ScrewSettings.shared.chops = chops
+            self.chops = chops
+        }
+        updateNowPlayingTime()
     }
 
     // MARK: - Picking up where you left off
@@ -304,6 +324,7 @@ final class Player {
         let asset = AVURLAsset(url: url, options: options)
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 30
+        item.audioTimePitchAlgorithm = .varispeed     // speed changes move the pitch too, like a record (identical at normal speed)
         if let audio = try await asset.loadTracks(withMediaType: .audio).first {
             AudioTap.attach(to: item, track: audio)
         }
@@ -466,7 +487,8 @@ final class Player {
             MPMediaItemPropertyAlbumTitle: t.album,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(ScrewSettings.shared.speed.rate) : 0.0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: Double(ScrewSettings.shared.speed.rate),
         ]
         if let art = nowPlayingArt { info[MPMediaItemPropertyArtwork] = art }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info

@@ -669,3 +669,173 @@ final class ExtrasTests: XCTestCase {
         s.choice = old
     }
 }
+
+// MARK: - Chopped & screwed
+
+final class ScrewTests: XCTestCase {
+    let sr = 44100.0
+
+    /// A drum loop: kick on 1 and 3, snare on 2 and 4, hats on eighths, a bass note, plus a little noise.
+    func beat(bpm: Double, seconds: Double, offset: Double = 0.137, swing: Double = 0, seed: UInt64 = 7) -> [Float] {
+        let n = Int(seconds * sr)
+        var out = [Float](repeating: 0, count: n)
+        let p = 60 / bpm
+        var rng = seed
+        func noise() -> Float { rng = rng &* 6364136223846793005 &+ 1442695040888963407; return Float(Int64(bitPattern: rng >> 1) % 2000) / 2000 - 0.5 }
+        var k = 0
+        while true {
+            let t0 = offset + Double(k) * p
+            if t0 >= seconds { break }
+            let isKick = k % 2 == 0
+            let start = Int(t0 * sr)
+            for i in 0..<Int(0.25 * sr) where start + i < n {
+                let t = Double(i) / sr
+                if isKick {
+                    let f = 55 + 90 * exp(-t * 30)
+                    out[start + i] += Float(0.9 * sin(2 * .pi * f * t) * exp(-t * 9))
+                } else {
+                    out[start + i] += noise() * Float(0.6 * exp(-t * 22)) + Float(0.3 * sin(2 * .pi * 190 * t) * exp(-t * 18))
+                }
+            }
+            for h in 0..<2 {   // hats
+                let ht = t0 + Double(h) * p / 2 + (h == 1 ? swing * p / 2 : 0)
+                let hs = Int(ht * sr)
+                for i in 0..<Int(0.04 * sr) where hs + i < n && hs + i >= 0 { out[hs + i] += noise() * Float(0.18 * exp(-Double(i) / sr * 90)) }
+            }
+            k += 1
+        }
+        for i in 0..<n { out[i] += Float(0.12 * sin(2 * .pi * 41.2 * Double(i) / sr)) + noise() * 0.01 }
+        return out
+    }
+
+    /// Runs audio through a tracker/chopper in 512-sample blocks like the real audio thread does.
+    func run(_ x: [Float], amount: ChopAmount, seed: UInt64 = 42, onBlock: ((Chopper, Int) -> Void)? = nil) -> (Chopper, [Float], [Float]) {
+        let c = Chopper(sampleRate: sr, seed: seed)
+        c.prepare(channels: 2)
+        var l = x, r = x
+        var i = 0
+        while i < x.count {
+            let n = min(512, x.count - i)
+            l.withUnsafeMutableBufferPointer { lp in
+                r.withUnsafeMutableBufferPointer { rp in
+                    c.process([(lp.baseAddress! + i, 1), (rp.baseAddress! + i, 1)], frames: n, amount: amount)
+                }
+            }
+            onBlock?(c, i)
+            i += n
+        }
+        return (c, l, r)
+    }
+
+    func testFindsTheTempo() {
+        for bpm in [72.0, 80, 90, 100, 120] {
+            let (c, _, _) = run(beat(bpm: bpm, seconds: 14), amount: .off)
+            let got = c.tracker.bpm
+            metric("screw.tempo true=\(Int(bpm)) found=\(String(format: "%.2f", got)) confidence=\(String(format: "%.2f", c.tracker.confidence))")
+            XCTAssertEqual(got, bpm, accuracy: bpm * 0.015, "tempo at \(bpm) BPM")
+            XCTAssertGreaterThan(c.tracker.confidence, 0.25)
+        }
+        // fast songs may be counted in half time, which is still on the beat
+        let (fast, _, _) = run(beat(bpm: 150, seconds: 14), amount: .off)
+        let ratio = fast.tracker.bpm / 150
+        XCTAssertTrue(abs(ratio - 1) < 0.015 || abs(ratio - 0.5) < 0.015, "150 BPM -> \(fast.tracker.bpm)")
+    }
+
+    func testFindsWhereTheBeatsAre() {
+        for (bpm, offset) in [(90.0, 0.137), (75.0, 0.42), (110.0, 0.05)] {
+            let (c, _, _) = run(beat(bpm: bpm, seconds: 14, offset: offset), amount: .off)
+            let p = 60 / bpm * sr
+            guard let next = c.tracker.nextBeat(atOrAfter: 12 * sr) else { return XCTFail("no beat") }
+            var err = (next - offset * sr).truncatingRemainder(dividingBy: p)
+            if err > p / 2 { err -= p }
+            if err < -p / 2 { err += p }
+            let ms = abs(err) / sr * 1000
+            metric("screw.beat_phase bpm=\(Int(bpm)) error=\(String(format: "%.1f", ms))ms")
+            XCTAssertLessThan(ms, 15, "beats land within 15 ms at \(bpm) BPM")
+        }
+    }
+
+    func testChopsLandOnTheBeatAndRepeatIt() {
+        let bpm = 84.0, offset = 0.21
+        let x = beat(bpm: bpm, seconds: 60, offset: offset)
+        let (c, l, _) = run(x, amount: .heavy)
+        let p = 60 / bpm * sr
+        XCTAssertGreaterThanOrEqual(c.history.count, 4, "heavy chops happen regularly (\(c.history.count) in a minute)")
+        var worst = 0.0
+        for chop in c.history {
+            var err = (chop.start - offset * sr).truncatingRemainder(dividingBy: p)
+            if err > p / 2 { err -= p }
+            if err < -p / 2 { err += p }
+            worst = max(worst, abs(err) / sr * 1000)
+            XCTAssertTrue([p, p / 2, 2 * p].contains { abs($0 - chop.delay) / p < 0.03 }, "cut back a beat, half a beat or two beats")
+            // in the middle of the chop you hear exactly what played one delay earlier
+            let mid = Int(chop.start + chop.length / 2)
+            let d = Int(chop.delay.rounded())
+            for i in stride(from: mid - 200, to: mid + 200, by: 7) {
+                XCTAssertEqual(l[i], x[i - d], accuracy: 1e-6, "repeat is the real earlier audio")
+            }
+            // and it comes back to the song right after
+            let after = Int(chop.start + chop.length) + 600
+            XCTAssertEqual(l[after], x[after], accuracy: 1e-6)
+        }
+        metric("screw.chops count=\(c.history.count)/min worst_offbeat=\(String(format: "%.1f", worst))ms")
+        XCTAssertLessThan(worst, 15, "every cut lands within 15 ms of a beat")
+        let first = c.history.first.map { $0.start / sr } ?? 0
+        XCTAssertGreaterThan(first, 4, "no chops until the beat is found")
+    }
+
+    func testCutsDontClick() {
+        let x = beat(bpm: 90, seconds: 40)
+        let (c, l, _) = run(x, amount: .heavy, seed: 9)
+        var inputMax: Float = 0
+        for i in 1..<x.count { inputMax = max(inputMax, abs(x[i] - x[i - 1])) }
+        var cutMax: Float = 0
+        for chop in c.history {
+            for edge in [Int(chop.start), Int(chop.start + chop.length)] {
+                for i in (edge - 400)..<(edge + 400) where i > 0 && i < l.count { cutMax = max(cutMax, abs(l[i] - l[i - 1])) }
+            }
+        }
+        metric("screw.click jump_at_cuts=\(String(format: "%.3f", cutMax)) normal_max=\(String(format: "%.3f", inputMax))")
+        XCTAssertFalse(c.history.isEmpty)
+        XCTAssertLessThanOrEqual(cutMax, inputMax * 1.2, "no jump at a cut bigger than the music makes by itself")
+    }
+
+    func testOffLeavesTheSongAlone() {
+        let x = beat(bpm: 90, seconds: 20)
+        let (c, l, r) = run(x, amount: .off)
+        XCTAssertTrue(c.history.isEmpty)
+        XCTAssertEqual(l, x)
+        XCTAssertEqual(r, x)
+    }
+
+    func testScrubbingStartsOver() {
+        let x = beat(bpm: 90, seconds: 30)
+        var resets = 0
+        let (c, _, _) = run(x, amount: .heavy) { c, i in
+            if i == 512 * 1200 { c.reset(); resets += 1 }     // a jump around 14 s
+        }
+        XCTAssertEqual(resets, 1)
+        let afterJump = 512.0 * 1200
+        XCTAssertFalse(c.history.contains { $0.start > afterJump && $0.start < afterJump + 4 * sr }, "no chops right after a jump")
+    }
+
+    func testFastEnoughForTheAudioThread() {
+        let x = beat(bpm: 90, seconds: 60)
+        let t0 = CFAbsoluteTimeGetCurrent()
+        _ = run(x, amount: .heavy)
+        let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        metric("screw.cpu 60s_stereo=\(Int(ms))ms realtime_x=\(Int(60000 / ms))")
+        XCTAssertLessThan(ms, 1500, "at least 40x faster than real time")
+    }
+
+    @MainActor func testSpeedSettings() {
+        let p = Player()
+        p.setScrew(speed: .screwed, chops: .light)
+        XCTAssertEqual(ScrewSettings.shared.speed.rate, 0.80)
+        XCTAssertEqual(ScrewSheet.label(.screwed, .light), "Screwed & Chopped")
+        XCTAssertEqual(ScrewSheet.label(.slowed, .off), "Slowed")
+        XCTAssertEqual(ScrewSheet.label(.off, .heavy), "Chopped")
+        p.setScrew(speed: .off, chops: .off)
+        XCTAssertFalse(ScrewSettings.shared.isOn)
+    }
+}

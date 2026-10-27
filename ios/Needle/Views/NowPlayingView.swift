@@ -10,6 +10,7 @@ struct NowPlayingView: View {
     @State private var palette = Palette.fallback
     @State private var backdrop: UIImage?
     @State private var showEQ = false
+    @State private var showScrew = false
     @State private var showQueue = false
     @State private var artDrag: CGFloat = 0
     @State private var sheetDrag: CGFloat = 0
@@ -59,6 +60,11 @@ struct NowPlayingView: View {
                 .presentationBackground(.ultraThinMaterial)
         }
         .fullScreenCover(isPresented: $showVizFull) { VizFullScreen() }
+        .sheet(isPresented: $showScrew) {
+            ScrewSheet(tint: palette.accent)
+                .presentationDetents([.height(540), .large])
+                .presentationBackground(.ultraThinMaterial)
+        }
         .sheet(isPresented: $showQueue) {
             QueueView()
                 .presentationDetents([.medium, .large])
@@ -234,6 +240,17 @@ struct NowPlayingView: View {
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(.white.opacity(eq.enabled ? 0.16 : 0.08), in: Capsule())
             }
+            Button { showScrew = true } label: {
+                let on = player.screwSpeed != .off || player.chops != .off
+                HStack(spacing: 5) {
+                    Image(systemName: "tortoise.fill")
+                    if on { Text(ScrewSheet.label(player.screwSpeed, player.chops)).font(.footnote.weight(.semibold)).lineLimit(1) }
+                }
+                .padding(.horizontal, on ? 12 : 10).padding(.vertical, 8)
+                .background(on ? AnyShapeStyle(palette.accent.opacity(0.9)) : AnyShapeStyle(.white.opacity(0.08)), in: Capsule())
+                .foregroundStyle(on ? .black : .white)
+            }
+            .accessibilityLabel("Slowed and chopped")
             Spacer()
             AirPlayButton().frame(width: 40, height: 40)
             Spacer()
