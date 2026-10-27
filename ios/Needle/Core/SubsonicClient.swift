@@ -124,6 +124,30 @@ struct SubsonicClient {
         try await call("getPlaylist", ["id": id]).playlist?.entry ?? []
     }
 
+    func songs(genre: String, count: Int = 300) async throws -> [Song] {
+        try await call("getSongsByGenre", ["genre": genre, "count": "\(count)"]).songsByGenre?.song ?? []
+    }
+
+    func songs(matching query: String, count: Int = 60) async throws -> [Song] {
+        try await call("search3", ["query": query, "artistCount": "0", "albumCount": "0", "songCount": "\(count)"]).searchResult3?.song ?? []
+    }
+
+    func artistInfo(_ id: String) async throws -> SubsonicResponse.ArtistInfo? {
+        try await call("getArtistInfo2", ["id": id, "count": "12", "includeNotPresent": "false"]).artistInfo2
+    }
+
+    /// Saves songs as a new playlist on the server.
+    func createPlaylist(name: String, songIds: [String]) async throws {
+        guard config.isComplete, let base = url("createPlaylist", ["name": name]),
+              var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else { throw ServerProblem.notConfigured }
+        comps.queryItems = (comps.queryItems ?? []) + songIds.map { URLQueryItem(name: "songId", value: $0) }
+        guard let url = comps.url else { throw ServerProblem.notConfigured }
+        let (data, response) = try await session.data(for: request(for: url))
+        try Self.check(response)
+        let env = try? JSONDecoder().decode(SubsonicEnvelope.self, from: data)
+        if let r = env?.response, r.status != "ok" { throw ServerProblem.server(r.error?.message ?? "Couldn't save the playlist.") }
+    }
+
     func randomSongs(_ count: Int = 50) async throws -> [Song] {
         try await call("getRandomSongs", ["size": "\(count)"]).randomSongs?.song ?? []
     }

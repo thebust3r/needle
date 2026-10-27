@@ -11,7 +11,8 @@ enum ListRoute: Hashable { case albums, artists, playlists, favorites, downloads
 extension View {
     func withDestinations() -> some View {
         self
-            .navigationDestination(for: Album.self) { AlbumView(album: $0) }
+            .navigationDestination(for: Album.self) { AlbumView(album: $0).zoomDestination($0.id) }
+            .navigationDestination(for: MixRoute.self) { MixView(mix: $0.mix) }
             .navigationDestination(for: ArtistRoute.self) { ArtistView(route: $0) }
             .navigationDestination(for: PlaylistRoute.self) { PlaylistView(playlist: $0.playlist) }
             .navigationDestination(for: LocalAlbumRoute.self) { LocalAlbumView(route: $0) }

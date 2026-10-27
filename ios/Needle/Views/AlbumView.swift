@@ -147,18 +147,32 @@ struct ArtistView: View {
     @Environment(AppModel.self) private var app
     @Environment(Player.self) private var player
     let route: ArtistRoute
-    @State private var loader = Loader<[Album]>()
+    @State private var loader = Loader<(Artist, [Album])>()
+    @State private var info: SubsonicResponse.ArtistInfo?
     @State private var starting = false
+    @State private var bioOpen = false
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
 
     var body: some View {
-        let albums = loader.value ?? []
+        let albums = loader.value?.1 ?? []
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text(route.name).font(Theme.title(32)).padding(.horizontal, 20).padding(.top, 8)
+                hero
                 PlayButtons(play: { Task { await playAll(albums, shuffle: false) } },
                             shuffle: { Task { await playAll(albums, shuffle: true) } })
                     .disabled(albums.isEmpty || starting)
+                if let bio = info?.biography.map(Self.plain), !bio.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("About").font(.system(size: 20, weight: .bold).width(.expanded))
+                        Text(bio).font(.subheadline).foregroundStyle(Theme.secondary)
+                            .lineLimit(bioOpen ? nil : 4)
+                        Button(bioOpen ? "Less" : "More") { withAnimation(.easeInOut) { bioOpen.toggle() } }
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.accent)
+                    }
+                    .padding(.horizontal, 20)
+                    .transition(.opacity)
+                }
+                Text("Albums").font(.system(size: 20, weight: .bold).width(.expanded)).padding(.horizontal, 20)
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 22) {
                     ForEach(albums) { a in
                         NavigationLink(value: a) {
@@ -169,17 +183,88 @@ struct ArtistView: View {
                             }
                             .frame(width: 160)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PressScale())
+                        .zoomSource(a.id)
                     }
                 }
                 .padding(.horizontal, 20)
                 if loader.loading && albums.isEmpty { ProgressView().frame(maxWidth: .infinity).padding(40) }
+                if let similar = info?.similarArtist, !similar.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Fans Also Like").font(.system(size: 20, weight: .bold).width(.expanded)).padding(.horizontal, 20)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(alignment: .top, spacing: 16) {
+                                ForEach(similar) { a in
+                                    NavigationLink(value: ArtistRoute(id: a.id, name: a.name)) {
+                                        VStack(spacing: 6) {
+                                            ArtistPhoto(url: a.artistImageUrl, coverArt: a.coverArt ?? a.id, size: 100)
+                                            Text(a.name).font(.caption.weight(.semibold)).lineLimit(1)
+                                        }
+                                        .frame(width: 100)
+                                    }
+                                    .buttonStyle(PressScale())
+                                    .shelfAppear()
+                                }
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                    }
+                }
             }
             .padding(.bottom, 24)
         }
         .background(Theme.background)
+        .ignoresSafeArea(edges: .top)
         .navigationBarTitleDisplayMode(.inline)
-        .task { await loader.load { try await app.client.artist(route.id).1 } }
+        .task {
+            await loader.load {
+                let (a, albums) = try await app.client.artist(route.id)
+                return (a, albums)
+            }
+            let i = try? await app.client.artistInfo(route.id)
+            withAnimation(.easeInOut(duration: 0.4)) { info = i }
+        }
+    }
+
+    private var hero: some View {
+        let url = info?.largeImageUrl ?? loader.value?.0.artistImageUrl
+        return ZStack(alignment: .bottomLeading) {
+            Group {
+                if let s = url, let u = URL(string: s), !s.contains("2a96cbd8b46e442fc41c2b86b821562f") {   // Last.fm's blank star image
+                    AsyncImage(url: u, transaction: Transaction(animation: .easeInOut(duration: 0.5))) { phase in
+                        if let img = phase.image { img.resizable().scaledToFill() } else { fallbackHero }
+                    }
+                } else {
+                    fallbackHero
+                }
+            }
+            .frame(height: 320)
+            .frame(maxWidth: .infinity)
+            .clipped()
+            LinearGradient(colors: [.clear, Theme.background.opacity(0.6), Theme.background], startPoint: .center, endPoint: .bottom)
+            Text(route.name).font(Theme.title(34)).lineLimit(2).minimumScaleFactor(0.6)
+                .shadow(color: .black.opacity(0.5), radius: 10)
+                .padding(.horizontal, 20).padding(.bottom, 8)
+        }
+        .frame(height: 320)
+    }
+
+    @ViewBuilder private var fallbackHero: some View {
+        if let first = loader.value?.1.first {
+            ArtworkView(track: nil, coverArt: first.coverArt ?? first.id, size: 400, corner: 0)
+                .blur(radius: 30).opacity(0.7)
+        } else {
+            Theme.surface
+        }
+    }
+
+    /// Last.fm bios are HTML with a "Read more" link; keep just the words.
+    static func plain(_ html: String) -> String {
+        var s = html.replacingOccurrences(of: "<a[^>]*>.*?</a>", with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func playAll(_ albums: [Album], shuffle: Bool) async {
@@ -190,5 +275,26 @@ struct ArtistView: View {
             if let result = try? await app.client.album(a.id) { all += result.1.map(Track.init(song:)) }
         }
         player.play(all, shuffle: shuffle)
+    }
+}
+
+/// A round artist photo, or their cover art if there's no photo.
+struct ArtistPhoto: View {
+    let url: String?
+    let coverArt: String
+    let size: CGFloat
+    var body: some View {
+        Group {
+            if let s = url, let u = URL(string: s), !s.contains("2a96cbd8b46e442fc41c2b86b821562f") {
+                AsyncImage(url: u) { phase in
+                    if let img = phase.image { img.resizable().scaledToFill() }
+                    else { ArtworkView(track: nil, coverArt: coverArt, size: size, corner: size / 2) }
+                }
+            } else {
+                ArtworkView(track: nil, coverArt: coverArt, size: size, corner: size / 2)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
     }
 }

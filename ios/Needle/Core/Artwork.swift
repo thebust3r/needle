@@ -33,7 +33,8 @@ actor ArtworkStore {
         let key = "local-\(file)" as NSString
         if let img = memory.object(forKey: key) { return img }
         let url = LocalLibrary.folder.appendingPathComponent(file)
-        guard let img = UIImage(contentsOfFile: url.path) else { return nil }
+        guard let raw = UIImage(contentsOfFile: url.path) else { return nil }
+        let img = raw.preparingForDisplay() ?? raw
         memory.setObject(img, forKey: key)
         return img
     }
@@ -46,14 +47,14 @@ actor ArtworkStore {
         let disk = folder.appendingPathComponent(key.replacingOccurrences(of: "/", with: "_") + ".jpg")
         let client = self.client
         let task = Task<UIImage?, Never> {
-            if let data = try? Data(contentsOf: disk), let img = UIImage(data: data) { return img }
+            if let data = try? Data(contentsOf: disk), let img = UIImage(data: data) { return img.preparingForDisplay() ?? img }
             guard let client, let url = client.coverURL(id, size: px) else { return nil }
             guard let result = try? await client.session.data(for: client.request(for: url)),
                   (try? SubsonicClient.check(result.1)) != nil,
                   let img = UIImage(data: result.0) else { return nil }
             let data = result.0
             try? data.write(to: disk)
-            return img
+            return img.preparingForDisplay() ?? img
         }
         inFlight[key] = task
         let img = await task.value

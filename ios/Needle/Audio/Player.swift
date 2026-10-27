@@ -38,6 +38,7 @@ final class Player {
     @ObservationIgnored private var itemKVO: NSKeyValueObservation?
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var nowPlayingArt: MPMediaItemArtwork?
+    @ObservationIgnored private var lastSavedSecond = -1
 
     init() {
         av.actionAtItemEnd = .advance
@@ -65,6 +66,31 @@ final class Player {
             MainActor.assumeIsolated { self?.interrupted(note) }
         }
         setupRemoteCommands()
+        restoreSession()
+    }
+
+    // MARK: - Picking up where you left off
+
+    private struct Session: Codable { var queue: [Track]; var index: Int; var time: Double; var shuffled: Bool }
+    private static let sessionKey = "player.session"
+
+    /// Remembers the queue and position, so the app (and Home's Continue Listening) can pick up after a restart.
+    func saveSession() {
+        guard !queue.isEmpty else { return }
+        let lo = max(0, index - 50), hi = min(queue.count, index + 250)
+        let s = Session(queue: Array(queue[lo..<hi]), index: index - lo, time: currentTime, shuffled: shuffled)
+        if let data = try? JSONEncoder().encode(s) { UserDefaults.standard.set(data, forKey: Self.sessionKey) }
+    }
+
+    private func restoreSession() {
+        guard let data = UserDefaults.standard.data(forKey: Self.sessionKey),
+              let s = try? JSONDecoder().decode(Session.self, from: data), s.queue.indices.contains(s.index) else { return }
+        queue = s.queue
+        originalQueue = s.queue
+        index = s.index
+        shuffled = s.shuffled
+        duration = s.queue[s.index].duration
+        currentTime = s.time
     }
 
     // MARK: - Starting music
@@ -138,6 +164,7 @@ final class Player {
     func pause() {
         av.pause()
         isPlaying = false
+        saveSession()
         updateNowPlayingTime()
     }
 
@@ -237,6 +264,8 @@ final class Player {
         if autoplay { isPlaying = true }
         errorMessage = nil
         updateNowPlaying(for: track)
+        if autoplay { PlayHistory.shared.started(track) }
+        saveSession()
 
         Task {
             do {
@@ -313,8 +342,9 @@ final class Player {
             currentTime = 0
             scrobbledCurrent = false
             watch(item)
-            if let t = current { updateNowPlaying(for: t) }
+            if let t = current { updateNowPlaying(for: t); PlayHistory.shared.started(t) }
             refreshPreload()
+            saveSession()
         }
     }
 
@@ -361,6 +391,7 @@ final class Player {
     private func tick(_ seconds: Double) {
         guard !seeking, seconds.isFinite else { return }
         currentTime = seconds
+        if Int(seconds) % 5 == 0, Int(seconds) != lastSavedSecond { lastSavedSecond = Int(seconds); saveSession() }
         if let d = av.currentItem?.duration.seconds, d.isFinite, d > 0, abs(d - duration) > 1 { duration = d }
         if !scrobbledCurrent, let t = current, !t.isLocal, duration > 0, seconds > min(duration * 0.5, 240) {
             scrobbledCurrent = true

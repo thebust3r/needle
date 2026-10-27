@@ -11,7 +11,6 @@ struct NowPlayingView: View {
     @State private var backdrop: UIImage?
     @State private var showEQ = false
     @State private var showQueue = false
-    @State private var scrubbing: Double?
     @State private var artDrag: CGFloat = 0
     @State private var sheetDrag: CGFloat = 0
     @State private var viz = VizSettings.shared
@@ -50,12 +49,7 @@ struct NowPlayingView: View {
                 .padding(.top, geo.safeAreaInsets.top)
             }
             .ignoresSafeArea()
-            .offset(y: max(0, sheetDrag))
-            .gesture(DragGesture().onChanged { sheetDrag = $0.translation.height }
-                .onEnded { v in
-                    if v.translation.height > 140 || v.predictedEndTranslation.height > 400 { dismiss() }
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { sheetDrag = 0 }
-                })
+            .modifier(SwipeDownToClose(drag: $sheetDrag, close: { dismiss() }))
         }
         .foregroundStyle(.white)
         .statusBarHidden(false)
@@ -96,7 +90,7 @@ struct NowPlayingView: View {
             }
             LinearGradient(colors: [palette.top.opacity(0.35), .clear, palette.bottom.opacity(0.85), .black.opacity(0.8)],
                            startPoint: .top, endPoint: .bottom)
-            SpectrumGlow(color: palette.accent)
+            SpectrumGlow(color: palette.accent, running: player.isPlaying && !vizShowing && !lyricsOn)
                 .frame(height: 220)
                 .frame(maxHeight: .infinity, alignment: .bottom)
                 .opacity(player.isPlaying && !vizShowing && !lyricsOn ? 0.55 : 0)
@@ -188,45 +182,12 @@ struct NowPlayingView: View {
                         .symbolEffect(.bounce, value: t.starred)
                         .frame(width: 44, height: 44)
                 }
+                .sensoryFeedback(t.starred ? .success : .impact(weight: .light), trigger: t.starred)
             }
         }
     }
 
-    private var scrubber: some View {
-        let shown = scrubbing ?? player.currentTime
-        let frac = player.duration > 0 ? min(1, shown / player.duration) : 0
-        return VStack(spacing: 6) {
-            GeometryReader { g in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.2))
-                    Capsule().fill(.white).frame(width: g.size.width * frac)
-                }
-                .frame(height: scrubbing == nil ? 5 : 10)
-                .frame(maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0)
-                    .onChanged { v in
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            scrubbing = max(0, min(1, v.location.x / g.size.width)) * player.duration
-                        }
-                    }
-                    .onEnded { _ in
-                        if let s = scrubbing { player.seek(to: s) }
-                        withAnimation(.easeOut(duration: 0.2)) { scrubbing = nil }
-                    })
-            }
-            .frame(height: 22)
-            HStack {
-                Text(formatTime(shown))
-                Spacer()
-                if player.isBuffering && player.isPlaying { ProgressView().controlSize(.mini).tint(.white) }
-                Spacer()
-                Text("-" + formatTime(max(0, player.duration - shown)))
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.6))
-        }
-    }
+    private var scrubber: some View { ScrubberView() }
 
     private var controls: some View {
         HStack {
@@ -237,6 +198,7 @@ struct NowPlayingView: View {
             Spacer()
             Button { player.previous() } label: { Image(systemName: "backward.fill").font(.system(size: 30)) }
                 .buttonStyle(PressScale())
+                .sensoryFeedback(.impact(weight: .light), trigger: player.current?.id)
             Spacer()
             Button { player.togglePlay() } label: {
                 ZStack {
@@ -291,12 +253,13 @@ struct NowPlayingView: View {
 /// Soft bars of the live spectrum glowing at the bottom of Now Playing.
 struct SpectrumGlow: View {
     let color: Color
+    var running = true
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { _ in
-            let bins = EQProcessor.shared.spectrum(bins: 48)
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !running)) { _ in
+            let bins = running ? EQProcessor.shared.spectrum(bins: 48) : [Float](repeating: 0, count: 48)
             Canvas { ctx, size in
                 let w = size.width / CGFloat(bins.count)
-                for (i, v) in bins.enumerated() {
+                for (i, v) in bins.enumerated() where v > 0.01 {
                     let h = CGFloat(v) * size.height
                     let rect = CGRect(x: CGFloat(i) * w + 1, y: size.height - h, width: w - 2, height: h)
                     ctx.fill(Path(roundedRect: rect, cornerRadius: 2),
@@ -305,6 +268,7 @@ struct SpectrumGlow: View {
                 }
             }
             .blur(radius: 6)
+            .drawingGroup()
         }
         .allowsHitTesting(false)
     }
@@ -335,23 +299,108 @@ struct AirPlayButton: UIViewRepresentable {
 struct NowPlayingBackdrop: View {
     let image: UIImage
     var paused = false
+    @State private var drift = false
 
     var body: some View {
         Color.clear
             .overlay {
-                TimelineView(.animation(minimumInterval: 1 / 15, paused: paused)) { ctx in
-                    let t = ctx.date.timeIntervalSinceReferenceDate
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .scaleEffect(1.9 + 0.08 * sin(t / 7))
-                        .rotationEffect(.degrees(sin(t / 11) * 6))
-                        .offset(x: cos(t / 9) * 30, y: sin(t / 13) * 40)
-                        .blur(radius: 70)
-                        .opacity(0.85)
-                }
+                Image(uiImage: Self.blurred(image))
+                    .resizable()
+                    .scaledToFill()
+                    .scaleEffect(drift ? 1.98 : 1.82)
+                    .rotationEffect(.degrees(drift ? 6 : -6))
+                    .offset(x: drift ? 30 : -30, y: drift ? 40 : -40)
+                    .opacity(0.85)
             }
             .clipped()
             .allowsHitTesting(false)
+            .onAppear { setDrift(!paused) }
+            .onChange(of: paused) { _, p in setDrift(!p) }
+    }
+
+    private func setDrift(_ on: Bool) {
+        guard on else { return }   // when paused it simply finishes the current sway
+        withAnimation(.easeInOut(duration: 14).repeatForever(autoreverses: true)) { drift.toggle() }
+    }
+
+    private static let cache = NSCache<UIImage, UIImage>()
+    private static let context = CIContext()
+
+    /// A soft, pre-blurred copy of the cover, made once per song.
+    static func blurred(_ image: UIImage) -> UIImage {
+        if let hit = cache.object(forKey: image) { return hit }
+        guard let cg = image.cgImage else { return image }
+        let ci = CIImage(cgImage: cg)
+        let out = ci.clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: max(ci.extent.width, ci.extent.height) / 9])
+            .cropped(to: ci.extent)
+        guard let res = context.createCGImage(out, from: ci.extent) else { return image }
+        let img = UIImage(cgImage: res)
+        cache.setObject(img, forKey: image)
+        return img
+    }
+}
+
+/// The progress bar. It's its own view so only it redraws ten times a second as the song plays,
+/// not the whole Now Playing screen.
+struct ScrubberView: View {
+    @Environment(Player.self) private var player
+    @State private var scrubbing: Double?
+
+    var body: some View {
+        let shown = scrubbing ?? player.currentTime
+        let frac = player.duration > 0 ? min(1, shown / player.duration) : 0
+        VStack(spacing: 6) {
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.2))
+                    Capsule().fill(.white).frame(width: g.size.width * frac)
+                }
+                .frame(height: scrubbing == nil ? 5 : 10)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            scrubbing = max(0, min(1, v.location.x / g.size.width)) * player.duration
+                        }
+                    }
+                    .onEnded { _ in
+                        if let s = scrubbing { player.seek(to: s) }
+                        withAnimation(.easeOut(duration: 0.2)) { scrubbing = nil }
+                    })
+            }
+            .frame(height: 22)
+            HStack {
+                Text(formatTime(shown))
+                Spacer()
+                if player.isBuffering && player.isPlaying { ProgressView().controlSize(.mini).tint(.white) }
+                Spacer()
+                Text("-" + formatTime(max(0, player.duration - shown)))
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.6))
+        }
+        .sensoryFeedback(.selection, trigger: scrubbing == nil)
+    }
+}
+
+/// Before iOS 18: drag the screen down to close it. On iOS 18 and later the zoom transition
+/// already shrinks Now Playing back into the mini player when you swipe down, so we stay out of its way.
+struct SwipeDownToClose: ViewModifier {
+    @Binding var drag: CGFloat
+    let close: () -> Void
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+        } else {
+            content
+                .offset(y: max(0, drag))
+                .gesture(DragGesture().onChanged { drag = $0.translation.height }
+                    .onEnded { v in
+                        if v.translation.height > 140 || v.predictedEndTranslation.height > 400 { close() }
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { drag = 0 }
+                    })
+        }
     }
 }

@@ -13,6 +13,7 @@ struct Album: Identifiable, Codable, Hashable {
     var year: Int?
     var genre: String?
     var created: String?
+    var playCount: Int?
 }
 
 struct Song: Identifiable, Codable, Hashable {
@@ -31,6 +32,9 @@ struct Song: Identifiable, Codable, Hashable {
     var duration: Int?
     var bitRate: Int?
     var starred: String?
+    var playCount: Int?
+    var played: String?          // last played (ISO date), Navidrome 0.50+
+    var created: String?
 }
 
 struct Artist: Identifiable, Codable, Hashable {
@@ -96,6 +100,14 @@ struct SubsonicResponse: Decodable {
     struct LyricsLine: Decodable { var start: Int?; var value: String? }
     struct StructuredLyrics: Decodable { var synced: Bool?; var offset: Int?; var line: [LyricsLine]? }
     struct LyricsList: Decodable { var structuredLyrics: [StructuredLyrics]? }
+    struct Genre: Decodable { var value: String?; var songCount: Int?; var albumCount: Int? }
+    struct GenreList: Decodable { var genre: [Genre]? }
+    struct ArtistInfo: Decodable {
+        var biography: String?
+        var largeImageUrl: String?
+        var mediumImageUrl: String?
+        var similarArtist: [Artist]?
+    }
 
     let status: String
     var error: ServerError?
@@ -109,6 +121,9 @@ struct SubsonicResponse: Decodable {
     var randomSongs: SongList?
     var starred2: SearchResult?
     var lyricsList: LyricsList?
+    var songsByGenre: SongList?
+    var genres: GenreList?
+    var artistInfo2: ArtistInfo?
 }
 
 // MARK: - Something the player can play: a server song or a file on this iPhone

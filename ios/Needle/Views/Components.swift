@@ -6,7 +6,8 @@ enum Theme {
     static let line = Color.white.opacity(0.08)
     static let secondary = Color.white.opacity(0.58)
     static let tertiary = Color.white.opacity(0.36)
-    static let accent = Color(red: 0.43, green: 0.91, blue: 0.85)   // signal teal
+    /// Your accent color (Settings), or the playing album's color. Views using it update when it changes.
+    static var accent: Color { AccentStore.shared.color }
 
     static func title(_ size: CGFloat) -> Font { .system(size: size, weight: .bold).width(.expanded) }
 }

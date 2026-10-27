@@ -68,6 +68,8 @@ struct SettingsView: View {
     @Environment(LocalLibrary.self) private var local
     @State private var draft = ServerConfig()
     @State private var cleared = false
+    @State private var accent = AccentStore.shared
+    @State private var weather = WeatherStore.shared
 
     var body: some View {
         @Bindable var settings = settings
@@ -102,6 +104,28 @@ struct SettingsView: View {
                 Text("Needle web address")
             } footer: {
                 Text("Used for importing Spotify playlists. Leave blank: Needle uses your server address (or port 8795 at home).")
+            }
+
+            Section {
+                Picker("Accent color", selection: $accent.choice) {
+                    ForEach(AccentStore.Choice.allCases) { c in
+                        Label { Text(c.label) } icon: {
+                            Image(systemName: c == .albumArt ? "photo.fill" : "circle.fill").foregroundStyle(c.color)
+                        }
+                        .tag(c)
+                    }
+                }
+                .pickerStyle(.navigationLink)
+                Toggle("Weather on Home", isOn: $weather.showWeather)
+                if weather.showWeather {
+                    TextField("City", text: $weather.place)
+                        .textInputAutocapitalization(.words).autocorrectionDisabled()
+                        .onSubmit { Task { await weather.refresh(force: true) } }
+                }
+            } header: {
+                Text("Look")
+            } footer: {
+                Text("Match Album Art makes buttons and highlights take on the color of the song that's playing.")
             }
 
             Section("Storage") {

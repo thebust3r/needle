@@ -20,6 +20,7 @@ struct RootView: View {
     @AppStorage("skippedSetup") private var skippedSetup = false
     @State private var tab: AppTab = .home
     @State private var showNowPlaying = false
+    @Namespace private var zoom
 
     var body: some View {
         if !settings.config.isComplete && !skippedSetup && local.tracks.isEmpty {
@@ -45,14 +46,17 @@ struct RootView: View {
             VStack(spacing: 8) {
                 if player.current != nil {
                     MiniPlayer(open: { VizSettings.shared.on = false; showNowPlaying = true })
+                        .zoomSource("nowplaying")
                         .padding(.horizontal, 10)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 TabBar(tab: $tab)
+                    .sensoryFeedback(.selection, trigger: tab)
             }
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: player.current == nil)
         }
-        .fullScreenCover(isPresented: $showNowPlaying) { NowPlayingView() }
+        .fullScreenCover(isPresented: $showNowPlaying) { NowPlayingView().zoomDestination("nowplaying").environment(\.zoomNamespace, zoom) }
+        .environment(\.zoomNamespace, zoom)
         .overlay(alignment: .top) { ErrorToast() }
     }
 
@@ -99,15 +103,21 @@ struct MiniPlayer: View {
     @Environment(Player.self) private var player
     let open: () -> Void
     @State private var palette = Palette.fallback
+    @State private var drag: CGFloat = 0
+    @State private var skips = 0
 
     var body: some View {
         if let t = player.current {
             HStack(spacing: 12) {
                 ArtworkView(track: t, size: 44, corner: 7)
+                    .id(t.id)
+                    .transition(.asymmetric(insertion: .scale(scale: 0.6).combined(with: .opacity), removal: .opacity))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(t.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text(t.artist).font(.caption).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
                 }
+                .id("meta-" + t.id)
+                .transition(.push(from: drag > 0 ? .leading : .trailing).combined(with: .opacity))
                 Spacer()
                 if player.isBuffering && player.isPlaying {
                     ProgressView().tint(.white).frame(width: 36)
@@ -118,8 +128,9 @@ struct MiniPlayer: View {
                             .contentTransition(.symbolEffect(.replace))
                     }
                     .buttonStyle(PressScale())
+                    .sensoryFeedback(.impact(weight: .light), trigger: player.isPlaying)
                 }
-                Button { player.next() } label: {
+                Button { skip(+1) } label: {
                     Image(systemName: "forward.fill").font(.body).frame(width: 34, height: 36)
                 }
                 .buttonStyle(PressScale())
@@ -130,29 +141,48 @@ struct MiniPlayer: View {
             .background {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(LinearGradient(colors: [palette.top, palette.bottom], startPoint: .leading, endPoint: .trailing))
-                    .overlay(alignment: .bottom) {
-                        GeometryReader { g in
-                            Capsule().fill(.white.opacity(0.85))
-                                .frame(width: max(0, g.size.width - 32) * player.progress, height: 2)
-                                .padding(.leading, 16)
-                        }
-                        .frame(height: 2)
-                        .padding(.bottom, 2)
-                    }
+                    .overlay(alignment: .bottom) { MiniProgress().padding(.bottom, 2) }
                     .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
             }
+            .offset(x: drag * 0.35)
             .contentShape(Rectangle())
             .onTapGesture(perform: open)
-            .gesture(DragGesture(minimumDistance: 20).onEnded { v in
-                if v.translation.height < -30 { open() }
-                else if v.translation.width < -60 { player.next() }
-                else if v.translation.width > 60 { player.previous() }
-            })
+            .gesture(DragGesture(minimumDistance: 14)
+                .onChanged { v in if abs(v.translation.width) > abs(v.translation.height) { drag = v.translation.width } }
+                .onEnded { v in
+                    if v.translation.height < -30 && abs(v.translation.height) > abs(v.translation.width) { open() }
+                    else if v.translation.width < -60 { skip(+1) }
+                    else if v.translation.width > 60 { skip(-1) }
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { drag = 0 }
+                })
+            .sensoryFeedback(.impact(weight: .medium), trigger: skips)
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: t.id)
             .task(id: t.artworkKey) {
                 let p = await ArtworkStore.shared.palette(for: t)
-                withAnimation(.easeInOut(duration: 0.6)) { palette = p }
+                withAnimation(.easeInOut(duration: 0.6)) {
+                    palette = p
+                    AccentStore.shared.albumColor = p.accent
+                }
             }
         }
+    }
+
+    private func skip(_ dir: Int) {
+        skips += 1
+        dir > 0 ? player.next() : player.previous()
+    }
+}
+
+/// The thin progress line on the mini player; its own view so only it redraws as the song plays.
+struct MiniProgress: View {
+    @Environment(Player.self) private var player
+    var body: some View {
+        GeometryReader { g in
+            Capsule().fill(.white.opacity(0.85))
+                .frame(width: max(0, g.size.width - 32) * player.progress, height: 2)
+                .padding(.leading, 16)
+        }
+        .frame(height: 2)
     }
 }
 

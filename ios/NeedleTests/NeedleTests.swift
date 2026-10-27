@@ -426,3 +426,237 @@ final class LayoutTests: XCTestCase {
         XCTAssertGreaterThan(oldFit.width, screen.width)
     }
 }
+
+// MARK: - Daily mixes
+
+final class MixerTests: XCTestCase {
+    /// A pretend library: 5 genres x 4 artists x 3 albums x 8 songs = 480 songs.
+    func library() -> (MixLibrary, [Song]) {
+        let genres = ["Memphis Rap", "Alt Rock", "R&B", "Indie", "Jazz"]
+        var songs: [Song] = []
+        var albums: [Album] = []
+        for (gi, g) in genres.enumerated() {
+            for ai in 0..<4 {
+                let artist = "\(g) Artist \(ai)"
+                for al in 0..<3 {
+                    let alId = "al-\(gi)-\(ai)-\(al)"
+                    albums.append(Album(id: alId, name: "Album \(al)", artist: artist, artistId: "ar-\(gi)-\(ai)", coverArt: alId, genre: g))
+                    for t in 0..<8 {
+                        var s = Song(id: "s-\(gi)-\(ai)-\(al)-\(t)", title: "Song \(t)", album: "Album \(al)", artist: artist,
+                                     albumId: alId, genre: g, coverArt: alId, duration: 200)
+                        s.playCount = (gi == 0 ? 12 : gi == 1 ? 6 : 1) - (ai == 3 ? 1 : 0)
+                        songs.append(s)
+                    }
+                }
+            }
+        }
+        var lib = MixLibrary()
+        // most played: Memphis Rap, then Alt Rock, then R&B
+        lib.frequent = albums.filter { $0.genre == "Memphis Rap" } + albums.filter { $0.genre == "Alt Rock" } + albums.filter { $0.genre == "R&B" }.prefix(3)
+        lib.recent = Array(albums.filter { $0.genre == "Indie" }.prefix(4))
+        lib.sample = songs
+        lib.starred = Array(songs.filter { $0.genre == "Jazz" }.prefix(6))
+        lib.fresh = songs.filter { $0.albumId?.hasSuffix("-2") == true && $0.genre == "Indie" }.map { var s = $0; s.playCount = 0; return s }
+        for g in genres { lib.pools["genre:" + g] = songs.filter { $0.genre == g } }
+        return (lib, songs)
+    }
+
+    let today: Date = { var c = DateComponents(); c.year = 2026; c.month = 10; c.day = 26; c.hour = 21; return Calendar.current.date(from: c)! }()
+
+    func testPlansMixesAroundYourTopGenres() {
+        let (lib, _) = library()
+        let plan = Mixer.plan(lib, [], now: today)
+        XCTAssertEqual(plan.dailies.count, 4)
+        XCTAssertEqual(plan.dailies.first?.genre, "Memphis Rap", "your most played genre comes first")
+        XCTAssertEqual(Set(plan.dailies.compactMap(\.genre)).count, 4, "four different genres")
+        XCTAssertTrue(plan.dailies.allSatisfy { !$0.seeds.isEmpty && $0.seeds.count <= 3 })
+    }
+
+    func testDailyMixesAreGoodPlaylists() {
+        let (lib, _) = library()
+        let mixes = Mixer.build(lib, history: [], now: today)
+        let dailies = mixes.filter { $0.kind == .daily }
+        XCTAssertEqual(dailies.map(\.title), ["Daily Mix 1", "Daily Mix 2", "Daily Mix 3", "Daily Mix 4"])
+        for m in dailies {
+            XCTAssertEqual(m.songs.count, Mixer.size, m.title)
+            XCTAssertEqual(Set(m.songs.map(\.id)).count, m.songs.count, "\(m.title) has no repeats")
+            let perArtist = Dictionary(grouping: m.songs, by: { $0.artist ?? "" }).values.map(\.count).max() ?? 0
+            XCTAssertLessThanOrEqual(perArtist, 4, "\(m.title): at most 4 songs per artist")
+            let perAlbum = Dictionary(grouping: m.songs, by: { $0.albumId ?? "" }).values.map(\.count).max() ?? 0
+            XCTAssertLessThanOrEqual(perAlbum, 2, "\(m.title): at most 2 songs per album")
+            for (a, b) in zip(m.songs, m.songs.dropFirst()) where a.artist == b.artist {
+                // only allowed when nothing else was left to put between them
+                XCTAssertTrue(m.songs.suffix(3).contains(b), "\(m.title): same artist twice in a row early on")
+            }
+            XCTAssertEqual(m.covers.count, 4)
+            XCTAssertFalse(m.subtitle.isEmpty)
+        }
+        let first = dailies[0].songs.filter { $0.genre == "Memphis Rap" }.count
+        XCTAssertGreaterThan(first, 20, "Daily Mix 1 sticks to its genre")
+        metric("mixes.daily1 genre_share=\(first)/\(Mixer.size) subtitle=\(dailies[0].subtitle)")
+    }
+
+    func testSameAllDayNewTomorrow() {
+        let (lib, _) = library()
+        let a = Mixer.build(lib, history: [], now: today)
+        let b = Mixer.build(lib, history: [], now: today.addingTimeInterval(60 * 30))
+        XCTAssertEqual(a.first?.songs.map(\.id), b.first?.songs.map(\.id), "same mixes later the same day")
+        let c = Mixer.build(lib, history: [], now: today.addingTimeInterval(86400))
+        XCTAssertNotEqual(a.first?.songs.map(\.id), c.first?.songs.map(\.id), "new mixes tomorrow")
+    }
+
+    func testRecentPlaysAndSkipsGetPushedBack() {
+        let (lib, songs) = library()
+        let base = Mixer.build(lib, history: [], now: today).first!
+        // pretend you played (and skipped) every song of Daily Mix 1 yesterday, twice
+        var hist: [PlayRecord] = []
+        for round in 0..<2 {
+            for s in base.songs {
+                hist.append(PlayRecord(id: s.id, title: s.title, artist: s.artist!, album: s.album!, albumId: s.albumId,
+                                       coverArt: s.coverArt, duration: 200, at: today.addingTimeInterval(-86400 + Double(round * 60)), listened: 5))
+            }
+        }
+        let after = Mixer.build(lib, history: hist, now: today).first { $0.kind == .daily }!
+        let overlap = Set(after.songs.map(\.id)).intersection(base.songs.map(\.id)).count
+        XCTAssertLessThan(overlap, 8, "songs you just skipped mostly stay out (\(overlap) repeats)")
+        XCTAssertEqual(songs.count, 480)
+    }
+
+    func testTimeOfDayMixLearnsYourNights() {
+        let (lib, songs) = library()
+        let jazz = songs.filter { $0.genre == "Jazz" }
+        var hist: [PlayRecord] = []
+        for d in 1...10 {
+            for (i, s) in jazz.prefix(4).enumerated() {
+                let night = Calendar.current.date(bySettingHour: 23, minute: i * 5, second: 0, of: today.addingTimeInterval(-Double(d) * 86400))!
+                hist.append(PlayRecord(id: s.id, title: s.title, artist: s.artist!, album: s.album!, albumId: s.albumId,
+                                       coverArt: s.coverArt, duration: 200, at: night, listened: 200))
+            }
+        }
+        let lateNight = Calendar.current.date(bySettingHour: 23, minute: 30, second: 0, of: today)!
+        let mix = Mixer.build(lib, history: hist, now: lateNight).first { $0.kind == .timeOfDay }!
+        XCTAssertEqual(mix.title, "Late Night Mix")
+        XCTAssertEqual(mix.subtitle, "What you play around this time")
+        let jazzShare = mix.songs.filter { $0.genre == "Jazz" }.count
+        XCTAssertGreaterThan(jazzShare, mix.songs.count / 2, "late night = what you play late at night (\(jazzShare)/\(mix.songs.count))")
+        let morning = Calendar.current.date(bySettingHour: 8, minute: 0, second: 0, of: today)!
+        XCTAssertEqual(Mixer.build(lib, history: hist, now: morning).first { $0.kind == .timeOfDay }?.title, "Morning Mix")
+    }
+
+    func testRediscoverFreshAndOnThisDay() {
+        var (lib, songs) = library()
+        let oldDate = ISO8601DateFormatter().string(from: today.addingTimeInterval(-120 * 86400))
+        for i in lib.sample.indices where lib.sample[i].genre == "Alt Rock" { lib.sample[i].played = oldDate }
+        let lastYear = Calendar.current.date(byAdding: .year, value: -1, to: today)!
+        let hist = songs.prefix(6).map { s in
+            PlayRecord(id: s.id, title: s.title, artist: s.artist!, album: s.album!, albumId: s.albumId,
+                       coverArt: s.coverArt, duration: 200, at: lastYear, listened: 200)
+        }
+        let mixes = Mixer.build(lib, history: Array(hist), now: today)
+        let re = mixes.first { $0.kind == .rediscover }
+        XCTAssertNotNil(re)
+        XCTAssertTrue(re!.songs.allSatisfy { $0.genre == "Alt Rock" }, "only old favorites you haven't played lately")
+        let fresh = mixes.first { $0.kind == .fresh }
+        XCTAssertNotNil(fresh)
+        XCTAssertTrue(fresh!.songs.allSatisfy { $0.playCount == 0 })
+        let otd = mixes.first { $0.kind == .onThisDay }
+        XCTAssertEqual(otd?.songs.count, 6)
+        XCTAssertTrue(otd?.subtitle.contains("2025") == true, otd?.subtitle ?? "")
+        // no history from last year = no On This Day card
+        XCTAssertNil(Mixer.build(lib, history: [], now: today).first { $0.kind == .onThisDay })
+    }
+
+    func testLibraryWithoutGenresStillGetsMixes() {
+        var (lib, _) = library()
+        lib.frequent = lib.frequent.map { var a = $0; a.genre = nil; return a }
+        lib.recent = lib.recent.map { var a = $0; a.genre = nil; return a }
+        lib.sample = lib.sample.map { var s = $0; s.genre = nil; return s }
+        lib.starred = []; lib.fresh = []
+        lib.pools = [:]
+        let plan = Mixer.plan(lib, [], now: today)
+        XCTAssertGreaterThanOrEqual(plan.dailies.count, 3)
+        XCTAssertTrue(plan.dailies.allSatisfy { $0.genre == nil && !$0.seeds.isEmpty })
+        for d in plan.dailies { for a in d.seeds { lib.pools["artist:" + a] = lib.sample.filter { $0.artist == a } } }
+        let dailies = Mixer.build(lib, history: [], now: today).filter { $0.kind == .daily }
+        XCTAssertGreaterThanOrEqual(dailies.count, 3)
+    }
+
+    func testBuildIsFast() {
+        let (lib, songs) = library()
+        var hist: [PlayRecord] = []
+        for i in 0..<5000 {
+            let s = songs[i % songs.count]
+            hist.append(PlayRecord(id: s.id, title: s.title, artist: s.artist!, album: s.album!, albumId: s.albumId,
+                                   coverArt: s.coverArt, duration: 200, at: today.addingTimeInterval(-Double(i) * 3600), listened: 200))
+        }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        _ = Mixer.build(lib, history: hist, now: today)
+        let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        metric("mixes.build_ms=\(Int(ms)) (480 songs, 5000 plays)")
+        XCTAssertLessThan(ms, 1500)
+    }
+
+    @MainActor func testHistoryRecordsPlaysAndSkips() {
+        let h = PlayHistory(load: false)
+        let a = Track(song: Song(id: "a", title: "A", artist: "X", duration: 200))
+        let b = Track(song: Song(id: "b", title: "B", artist: "Y", duration: 200))
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        h.started(a, now: t0)
+        h.started(a, now: t0.addingTimeInterval(2))     // same song again right away: not a second play
+        h.started(b, now: t0.addingTimeInterval(8))     // skipped A after 8 seconds
+        XCTAssertEqual(h.records.map(\.id), ["a", "b"])
+        XCTAssertEqual(h.records[0].listened, 8)
+        XCTAssertTrue(h.records[0].skipped)
+    }
+}
+
+final class ExtrasTests: XCTestCase {
+    func testWeatherSymbols() {
+        XCTAssertEqual(WeatherNow.symbol(0, true), "sun.max.fill")
+        XCTAssertEqual(WeatherNow.symbol(0, false), "moon.stars.fill")
+        XCTAssertEqual(WeatherNow.symbol(63, true), "cloud.rain.fill")
+        XCTAssertEqual(WeatherNow.words(95), "Storms")
+    }
+
+    func testGreeting() {
+        func at(_ h: Int) -> Date { Calendar.current.date(bySettingHour: h, minute: 0, second: 0, of: .now)! }
+        XCTAssertEqual(HomeHeader.greeting(at(8)), "Good morning")
+        XCTAssertEqual(HomeHeader.greeting(at(14)), "Good afternoon")
+        XCTAssertEqual(HomeHeader.greeting(at(20)), "Good evening")
+        XCTAssertEqual(HomeHeader.greeting(at(2)), "Up late")
+    }
+
+    func testArtistBioCleanup() {
+        let html = #"Three 6 Mafia is a hip hop group from Memphis &amp; more. <a href="https://www.last.fm/music/Three+6+Mafia">Read more on Last.fm</a>"#
+        XCTAssertEqual(ArtistView.plain(html), "Three 6 Mafia is a hip hop group from Memphis & more.")
+    }
+
+    @MainActor func testBackdropBlurIsCheapAndCached() {
+        let img = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 160)).image { ctx in
+            UIColor.orange.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 80, height: 160))
+            UIColor.blue.setFill(); ctx.fill(CGRect(x: 80, y: 0, width: 80, height: 160))
+        }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let a = NowPlayingBackdrop.blurred(img)
+        let first = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        let t1 = CFAbsoluteTimeGetCurrent()
+        let b = NowPlayingBackdrop.blurred(img)
+        let again = (CFAbsoluteTimeGetCurrent() - t1) * 1000
+        metric("perf.backdrop_blur first=\(String(format: "%.1f", first))ms cached=\(String(format: "%.3f", again))ms")
+        XCTAssertTrue(a === b, "made once per song")
+        XCTAssertLessThan(first, 250)
+        XCTAssertLessThan(again, 1)
+        XCTAssertEqual(a.size, img.size)
+    }
+
+    @MainActor func testAccentFollowsSetting() {
+        let s = AccentStore.shared
+        let old = s.choice
+        s.choice = .red
+        XCTAssertEqual(Theme.accent, AccentStore.Choice.red.color)
+        s.choice = .albumArt
+        s.albumColor = .yellow
+        XCTAssertEqual(Theme.accent, .yellow)
+        s.choice = old
+    }
+}
