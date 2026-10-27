@@ -962,9 +962,13 @@ final class ScrewTests: XCTestCase {
         var rng: UInt64 = 3
         func noise() -> Float { rng = rng &* 6364136223846793005 &+ 1442695040888963407; return Float(Int64(bitPattern: rng >> 1) % 2000) / 2000 - 0.5 }
         let hiss = (0..<n).map { _ in noise() * 0.3 }
-        let chord = (0..<n).map { i -> Float in
+        var chord = [Float](repeating: 0, count: n)
+        let w = 2 * Double.pi
+        for i in 0..<n {
             let t = Double(i) / sr
-            return Float(0.2 * (sin(2 * .pi * 220 * t) + sin(2 * .pi * 277 * t) + sin(2 * .pi * 330 * t)) * (0.7 + 0.3 * sin(t * 0.5)))
+            let tones: Double = sin(w * 220 * t) + sin(w * 277 * t) + sin(w * 330 * t)
+            let swell: Double = 0.7 + 0.3 * sin(t * 0.5)
+            chord[i] = Float(0.2 * tones * swell)
         }
         for (name, x) in [("noise", hiss), ("held chord", chord)] {
             var maxConf = 0.0
@@ -984,8 +988,10 @@ final class ScrewTests: XCTestCase {
             rng = rng &* 6364136223846793005 &+ 1442695040888963407
             let r = Float(Int64(bitPattern: rng >> 1) % 2000) / 2000 - 0.5
             let t = Double(i) / rate, beat = (t * 2).truncatingRemainder(dividingBy: 1)
-            x[i] = Float(0.25 * sin(2 * .pi * 130.8 * t) + 0.35 * sin(2 * .pi * 55 * t) * exp(-beat * 9))
-            x[i] += r * Float(0.08 * exp(-(t * 4).truncatingRemainder(dividingBy: 1) * 20))
+            let tone: Double = 0.25 * sin(2 * Double.pi * 130.8 * t)
+            let kick: Double = 0.35 * sin(2 * Double.pi * 55 * t) * exp(-beat * 9)
+            let hatEnv: Double = 0.08 * exp(-(t * 4).truncatingRemainder(dividingBy: 1) * 20)
+            x[i] = Float(tone + kick) + r * Float(hatEnv)
         }
         let t = BeatTracker(sampleRate: rate)
         x.withUnsafeBufferPointer { p in var i = 0; while i < n { t.feed(p.baseAddress! + i, count: min(512, n - i)); i += 512 } }
