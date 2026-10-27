@@ -308,6 +308,7 @@ struct NowPlayingBackdrop: View {
             .overlay {
                 Image(uiImage: image)
                     .resizable()
+                    .interpolation(.high)
                     .scaledToFill()
                     .scaleEffect(drift ? 1.98 : 1.82)
                     .rotationEffect(.degrees(drift ? 6 : -6))
@@ -330,20 +331,25 @@ struct NowPlayingBackdrop: View {
 }
 
 private let blurCache = NSCache<UIImage, UIImage>()
-private let blurContext = CIContext(options: [.cacheIntermediates: false])
 
-/// A soft, pre-blurred copy of a cover, made once per song. Safe to call off the main thread.
+/// A soft copy of a cover, made once per song: shrunk to 16 pixels, then smoothly scaled back up to 64.
+/// Shown stretched across the screen it looks like a big blur, but it costs about a millisecond to make
+/// and nothing to draw. Safe to call off the main thread.
 func softBlur(_ image: UIImage) -> UIImage {
     if let hit = blurCache.object(forKey: image) { return hit }
-    guard let cg = image.cgImage else { return image }
-    let ci = CIImage(cgImage: cg)
-    let out = ci.clampedToExtent()
-        .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: max(ci.extent.width, ci.extent.height) / 9])
-        .cropped(to: ci.extent)
-    guard let res = blurContext.createCGImage(out, from: ci.extent) else { return image }
-    let img = UIImage(cgImage: res, scale: image.scale, orientation: image.imageOrientation)
-    blurCache.setObject(img, forKey: image)
-    return img
+    let fmt = UIGraphicsImageRendererFormat()
+    fmt.scale = 1
+    fmt.opaque = true
+    let tiny = UIGraphicsImageRenderer(size: CGSize(width: 16, height: 16), format: fmt).image { ctx in
+        ctx.cgContext.interpolationQuality = .high
+        image.draw(in: CGRect(x: 0, y: 0, width: 16, height: 16))
+    }
+    let soft = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64), format: fmt).image { ctx in
+        ctx.cgContext.interpolationQuality = .high
+        tiny.draw(in: CGRect(x: 0, y: 0, width: 64, height: 64))
+    }
+    blurCache.setObject(soft, forKey: image)
+    return soft
 }
 
 /// Sets up the blur machinery in the background at launch, so the first Now Playing opens without a hitch.

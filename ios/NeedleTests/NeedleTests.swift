@@ -653,9 +653,9 @@ final class ExtrasTests: XCTestCase {
         let again = (CFAbsoluteTimeGetCurrent() - t1) * 1000
         metric("perf.backdrop_blur setup=\(Int(setup))ms per_song=\(String(format: "%.1f", first))ms cached=\(String(format: "%.3f", again))ms")
         XCTAssertTrue(a === b, "made once per song")
-        XCTAssertLessThan(first, 60, "blurring a new song's cover is quick")
+        XCTAssertLessThan(first, 15, "softening a new song's cover is quick")
         XCTAssertLessThan(again, 1)
-        XCTAssertEqual(a.size, img.size)
+        XCTAssertEqual(a.size, CGSize(width: 64, height: 64), "small soft image, stretched by the screen")
     }
 
     @MainActor func testAccentFollowsSetting() {
