@@ -73,6 +73,11 @@ const lib = {
   playlists: () => api("getPlaylists").then((r) => r.playlists?.playlist || []),
   playlist: (id) => api("getPlaylist", { id }).then((r) => r.playlist),
   search: (query) => api("search3", { query, artistCount: 8, albumCount: 20, songCount: 40 }).then((r) => r.searchResult3 || {}),
+  /** The library artist with exactly this name (or the closest match). */
+  searchArtist: (name) => api("search3", { query: name, artistCount: 5, albumCount: 0, songCount: 0 }).then((r) => {
+    const list = (r.searchResult3 && r.searchResult3.artist) || [];
+    return list.find((a) => a.name.toLowerCase() === name.toLowerCase()) || list[0] || null;
+  }),
   random: (size) => api("getRandomSongs", { size }).then((r) => (r.randomSongs?.song || []).map(toTrack)),
   starred: () => api("getStarred2").then((r) => r.starred2 || {}),
   star: (id, on) => api(on ? "star" : "unstar", { id }),
@@ -633,7 +638,10 @@ const ui = {
     $(".np-art").src = art;
     softBackdrop(t.coverArt);
     $("#np-title").textContent = t.title;
-    $("#np-artist").textContent = t.artist;
+    const npa = $("#np-artist");
+    npa.textContent = t.artist;
+    npa.disabled = !t.artistId && !t.artist;
+    npa.setAttribute("aria-label", `${t.artist}. Go to artist`);
     $("#np-album").textContent = t.album;
     if (window.lyrics) lyrics.trackChanged(t);
     palette(t.coverArt).then((p) => {
@@ -1248,11 +1256,18 @@ function softBackdrop(coverArt) {
   src.crossOrigin = "anonymous";
   src.onload = () => {
     try {
+      // blur it once here (tiny, then softened at a medium size), so the drifting background only moves a finished
+      // picture each frame instead of re-blurring it: a lot lighter on phones
+      const tiny = document.createElement("canvas");
+      tiny.width = tiny.height = 16;
+      tiny.getContext("2d").drawImage(src, 0, 0, 16, 16);
       const c = document.createElement("canvas");
-      c.width = c.height = 24;
+      c.width = c.height = 128;
       const g = c.getContext("2d");
-      g.drawImage(src, 0, 0, 24, 24);
-      img.src = c.toDataURL("image/png");
+      g.imageSmoothingQuality = "high";
+      if ("filter" in g) g.filter = "blur(7px) saturate(1.3)";
+      g.drawImage(tiny, -16, -16, 160, 160);
+      img.src = c.toDataURL("image/jpeg", 0.9);
     } catch { img.src = src.src; }
   };
   src.src = cover(coverArt, 160);
@@ -1327,6 +1342,18 @@ function openScrew() {
     status();
   };
 }
+// tap the artist under the song title: go to their page
+$("#np-artist").onclick = async () => {
+  const t = player.current;
+  if (!t) return;
+  let id = t.artistId;
+  if (!id && t.artist) {          // a song from your Files without an artist link: look the name up
+    try { const r = await lib.searchArtist(t.artist); id = r && r.id; } catch { /* below */ }
+  }
+  if (!id) return toast(`Couldn't find ${t.artist} in your library`);
+  closeNP();
+  location.hash = `#/artist/${id}`;
+};
 $("#np-queue").onclick = () => { $("#queue").hidden = false; renderQueue(); };
 $("#np-more").onclick = () => player.current && showMenu(player.current.title, [player.current]);
 

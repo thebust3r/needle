@@ -17,7 +17,7 @@ struct HomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 30) {
+            VStack(alignment: .leading, spacing: 26) {
                 HomeHeader(shuffle: settings.config.isComplete ? { Task { await shuffleAll() } } : nil, shuffling: shuffling)
 
                 if settings.config.isComplete {
@@ -27,10 +27,9 @@ struct HomeView: View {
                             Task { await loadAll(force: true) }
                         }
                     }
+                    quickPicks
                     madeForYou
-                    shelf("Recently Played", recent)
-                    shelf("On Repeat", frequent)
-                    shelf("Recently Added", added)
+                    shelf("New in Your Library", freshAlbums)
                 } else {
                     connectCard
                 }
@@ -43,11 +42,11 @@ struct HomeView: View {
                                 ForEach(local.albums.prefix(12)) { a in
                                     NavigationLink(value: LocalAlbumRoute(name: a.name, artist: a.artist)) {
                                         VStack(alignment: .leading, spacing: 6) {
-                                            ArtworkView(track: a.tracks.first, size: 140, corner: 10)
+                                            ArtworkView(track: a.tracks.first, size: 128, corner: 10)
                                             Text(a.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                                             Text(a.artist).font(.caption).foregroundStyle(Theme.secondary).lineLimit(1)
                                         }
-                                        .frame(width: 140)
+                                        .frame(width: 128)
                                     }
                                     .buttonStyle(PressScale())
                                     .shelfAppear()
@@ -74,18 +73,14 @@ struct HomeView: View {
     @ViewBuilder private var madeForYou: some View {
         if !mixes.mixes.isEmpty || mixes.loading {
             VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    SectionHeader(title: "Made for You")
-                    Text("New mixes every morning, from your own music")
-                        .font(.caption).foregroundStyle(Theme.secondary).padding(.horizontal, 20)
-                }
+                SectionHeader(title: "Made for You")
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 14) {
                         if mixes.mixes.isEmpty {
-                            ForEach(0..<3, id: \.self) { _ in MixCardPlaceholder() }
+                            ForEach(0..<3, id: \.self) { _ in MixCardPlaceholder(size: 136) }
                         }
                         ForEach(mixes.mixes) { mix in
-                            NavigationLink(value: MixRoute(mix: mix)) { MixCard(mix: mix) }
+                            NavigationLink(value: MixRoute(mix: mix)) { MixCard(mix: mix, size: 136, showSubtitle: false) }
                                 .buttonStyle(PressScale())
                                 .zoomSource(mix.id)
                                 .shelfAppear()
@@ -116,15 +111,44 @@ struct HomeView: View {
         .padding(.horizontal, 20)
     }
 
+    /// Up to six things you've been playing (recent first, then favorites), no repeats.
+    private var picks: [Album] {
+        var seen = Set<String>(), out: [Album] = []
+        for a in (recent.value ?? []) + (frequent.value ?? []) where out.count < 6 && !seen.contains(a.id) { seen.insert(a.id); out.append(a) }
+        return out
+    }
+    /// New music that isn't already in the quick picks.
+    private var freshAlbums: [Album] {
+        let shown = Set(picks.map(\.id))
+        return Array((added.value ?? []).filter { !shown.contains($0.id) }.prefix(12))
+    }
+
+    /// What you've been playing, as a tidy grid of small tiles (instead of two big shelves).
+    @ViewBuilder private var quickPicks: some View {
+        let list = picks
+        if !list.isEmpty {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                ForEach(list) { album in
+                    NavigationLink(value: album) { QuickPickTile(album: album) }
+                        .buttonStyle(PressScale())
+                        .zoomSource(album.id)
+                        .shelfAppear()
+                }
+            }
+            .padding(.horizontal, 20)
+            .transition(.opacity)
+        }
+    }
+
     @ViewBuilder
-    private func shelf(_ title: String, _ loader: Loader<[Album]>) -> some View {
-        if let albums = loader.value, !albums.isEmpty {
+    private func shelf(_ title: String, _ albums: [Album]) -> some View {
+        if !albums.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: title)
+                SectionHeader(title: title) { openTab(.library) }
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 14) {
                         ForEach(albums) { album in
-                            NavigationLink(value: album) { AlbumCard(album: album, size: 150) }
+                            NavigationLink(value: album) { AlbumCard(album: album, size: 128) }
                                 .buttonStyle(PressScale())
                                 .zoomSource(album.id)
                                 .shelfAppear()
@@ -161,7 +185,7 @@ struct HomeView: View {
     }
 }
 
-// MARK: - Header: day, time, greeting, weather
+// MARK: - Header: one quiet line (day · time · weather), then the greeting and a shuffle button
 
 struct HomeHeader: View {
     var shuffle: (() -> Void)?
@@ -171,51 +195,39 @@ struct HomeHeader: View {
     var body: some View {
         TimelineView(.everyMinute) { ctx in
             let now = ctx.date
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .center) {
-                    Text(now.formatted(.dateTime.weekday(.wide).month(.wide).day()).uppercased())
-                        .font(.caption.weight(.bold)).tracking(1.2)
-                        .foregroundStyle(Theme.accent)
-                    Spacer()
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(now.formatted(.dateTime.weekday(.wide))).foregroundStyle(Theme.accent)
+                    Text("·").opacity(0.5)
+                    Text(now.formatted(date: .omitted, time: .shortened)).monospacedDigit().contentTransition(.numericText())
                     if weather.showWeather, let w = weather.now {
-                        HStack(spacing: 6) {
-                            Image(systemName: w.symbol).symbolRenderingMode(.multicolor)
-                            Text("\(w.temp)°").monospacedDigit()
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(.white.opacity(0.08), in: Capsule())
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                        .accessibilityLabel("\(w.temp) degrees, \(w.words), \(w.place)")
+                        Text("·").opacity(0.5)
+                        Image(systemName: w.symbol).symbolRenderingMode(.multicolor)
+                        Text("\(w.temp)°").monospacedDigit()
+                            .accessibilityLabel("\(w.temp) degrees, \(w.words), \(w.place)")
                     }
                 }
-                Text(Self.greeting(now)).font(Theme.title(32))
-                    .contentTransition(.opacity)
-                HStack(spacing: 8) {
-                    Text(now.formatted(date: .omitted, time: .shortened))
-                        .font(.title3.weight(.semibold).monospacedDigit())
-                        .contentTransition(.numericText())
-                    if weather.showWeather, let w = weather.now {
-                        Text("· \(w.words)").font(.subheadline).foregroundStyle(Theme.secondary).lineLimit(1)
-                    }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Theme.secondary)
+                .lineLimit(1)
+                HStack(alignment: .center) {
+                    Text(Self.greeting(now)).font(Theme.title(32)).contentTransition(.opacity)
                     Spacer()
                     if let shuffle {
                         Button(action: shuffle) {
-                            HStack(spacing: 6) {
+                            Group {
                                 if shuffling { ProgressView().controlSize(.small).tint(.black) }
-                                else { Image(systemName: "shuffle") }
-                                Text("Shuffle")
+                                else { Image(systemName: "shuffle").font(.system(size: 17, weight: .bold)) }
                             }
-                            .font(.subheadline.weight(.bold))
-                            .padding(.horizontal, 14).padding(.vertical, 8)
-                            .background(Theme.accent, in: Capsule())
+                            .frame(width: 42, height: 42)
+                            .background(Theme.accent, in: Circle())
                             .foregroundStyle(.black)
                         }
                         .buttonStyle(PressScale())
+                        .accessibilityLabel("Shuffle all your music")
                         .sensoryFeedback(.impact(weight: .light), trigger: shuffling)
                     }
                 }
-                .foregroundStyle(.white.opacity(0.85))
             }
             .animation(.easeInOut(duration: 0.4), value: weather.now)
         }
@@ -267,13 +279,37 @@ struct ContinueCard: View {
 struct MixCard: View {
     let mix: Mix
     var size: CGFloat = 160
+    var showSubtitle = true
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             MixArtwork(mix: mix, size: size)
-            Text(mix.subtitle).font(.caption).foregroundStyle(Theme.secondary).lineLimit(2)
-                .frame(width: size, alignment: .leading)
+            if showSubtitle {
+                Text(mix.subtitle).font(.caption).foregroundStyle(Theme.secondary).lineLimit(2)
+                    .frame(width: size, alignment: .leading)
+            }
         }
         .frame(width: size)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(mix.subtitle)
+    }
+}
+
+/// A small tile in the quick-picks grid: cover on the left, name and artist.
+struct QuickPickTile: View {
+    let album: Album
+    var body: some View {
+        HStack(spacing: 10) {
+            ArtworkView(track: nil, coverArt: album.coverArt ?? album.id, size: 56, corner: 0)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(album.name).font(.footnote.weight(.semibold)).lineLimit(1)
+                Text(album.artist ?? "").font(.caption2).foregroundStyle(Theme.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(height: 56)
+        .background(.white.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(Rectangle())
     }
 }
 
@@ -328,11 +364,11 @@ struct MixArtwork: View {
 }
 
 struct MixCardPlaceholder: View {
+    var size: CGFloat = 160
     @State private var glow = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.surface).frame(width: 160, height: 160)
-            RoundedRectangle(cornerRadius: 3).fill(Theme.surface).frame(width: 110, height: 10)
+            RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.surface).frame(width: size, height: size)
         }
         .opacity(glow ? 0.5 : 1)
         .onAppear { withAnimation(.easeInOut(duration: 0.9).repeatForever()) { glow = true } }

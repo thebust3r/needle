@@ -875,7 +875,7 @@ final class ScrewTests: XCTestCase {
         let x = beat(bpm: bpm, seconds: 60, offset: offset)
         let (c, l, _) = run(x, amount: .heavy)
         let p = 60 / bpm * sr
-        XCTAssertGreaterThanOrEqual(c.count, 12, "heavy chops happen a lot, so you actually hear them (\(c.count) in a minute)")
+        XCTAssertGreaterThanOrEqual(c.count, 6, "heavy chops come every couple of bars (\(c.count) in a minute)")
         var worst = 0.0
         for chop in c.history where !chop.played.isEmpty {
             for g in chop.played {
@@ -892,17 +892,39 @@ final class ScrewTests: XCTestCase {
             XCTAssertTrue(r.exact, "repeats are the real earlier audio")
             XCTAssertTrue(r.resumes, "the song picks up where the chop left off")
         }
+        // placed like a DJ: on the 1 (this song has kicks on 1 and 3) and adding whole bars, so it keeps its count
+        for chop in c.history where !chop.played.isEmpty {
+            let k = Int(((Double(chop.played[0].at) / sr - offset) / (60 / bpm)).rounded())
+            XCTAssertEqual(k % 2, 0, "\(chop.move.label) starts on a kick")
+            let beatsAdded = chop.jumps.reduce(0) { $0 + $1.J } / p
+            XCTAssertEqual(beatsAdded / 4, (beatsAdded / 4).rounded(), accuracy: 0.01, "\(chop.move.label) adds whole bars")
+        }
         let kinds = Set(c.history.map(\.move))
         metric("screw.chops count=\(c.count)/min kinds=\(kinds.count) worst_offbeat=\(String(format: "%.1f", worst))ms added=\(String(format: "%.1f", Double(c.lag) / sr))s")
-        XCTAssertGreaterThanOrEqual(kinds.count, 4, "a mix of moves, not the same one over and over")
+        XCTAssertGreaterThanOrEqual(kinds.count, 3, "a mix of moves, not the same one over and over")
+        for (a, b) in zip(c.history, c.history.dropFirst()) { XCTAssertNotEqual(a.move, b.move, "never the same move twice in a row") }
         XCTAssertLessThan(worst, 15, "every cut lands within 15 ms of the beat grid")
         XCTAssertGreaterThan(Double(c.lag) / sr, 5, "chops made the song longer")
         let first = c.history.first.map { Double($0.start) / sr } ?? 0
         XCTAssertGreaterThan(first, 4, "no chops until the beat is found")
         let (light, _, _) = run(x, amount: .light)
         metric("screw.chops light=\(light.count)/min")
-        XCTAssertGreaterThanOrEqual(light.count, 5, "light still chops every few bars")
+        XCTAssertGreaterThanOrEqual(light.count, 2, "light still chops every few bars")
         XCTAssertLessThan(light.count, c.count)
+    }
+
+    func testChopsStayOutOfABreakdown() {
+        // 20 s of beat, 12 s of just a quiet pad, then the beat again
+        var x = beat(bpm: 84, seconds: 48, offset: 0.21)
+        for i in Int(20 * sr)..<Int(32 * sr) {
+            let t = Double(i) / sr
+            x[i] = Float(0.05 * sin(2 * .pi * 220 * t) + 0.02 * sin(2 * .pi * 41.2 * t))
+        }
+        let (c, _, _) = run(x, amount: .heavy)
+        let starts = c.history.compactMap { $0.played.first.map { Double($0.at) / sr } }
+        metric("screw.breakdown chops_at=\(starts.map { String(format: "%.1f", $0) }.joined(separator: ","))")
+        XCTAssertTrue(starts.allSatisfy { $0 < 20.5 || $0 > 32 }, "no chops while it's just a quiet pad")
+        XCTAssertTrue(starts.contains { $0 > 32 }, "they come back with the beat")
     }
 
     func testFindsTheBeatUnder808s() {

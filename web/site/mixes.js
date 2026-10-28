@@ -328,13 +328,19 @@ function mixArt(m, size) {
 function headerHTML() {
   const d = new Date();
   const w = weather.on ? weather.now : null;
+  const day = d.toLocaleDateString(undefined, { weekday: "long" }), time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   return `<div class="home-head">
-    <div class="hh-top"><span class="hh-date">${esc(d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }))}</span>
-      ${w ? `<span class="hh-weather" title="${esc(weather.words(w.code))} in ${esc(w.place)}">${weather.icon(w.code, w.day)} ${w.temp}°</span>` : ""}</div>
-    <h1 class="title hh-greet">${greeting(d.getHours())}</h1>
-    <div class="hh-row"><span class="hh-time">${esc(d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }))}</span>
-      ${w ? `<span class="hh-words" title="${esc(w.place)}">· ${esc(weather.words(w.code))}</span>` : ""}
-      <button class="hh-shuffle" id="shuffle-all">${icon("shuffle")}Shuffle</button></div></div>`;
+    <div class="hh-line"><span class="hh-date" title="${esc(d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }))}">${esc(day)}</span>
+      <span class="hh-dot">·</span><span class="hh-time">${esc(time)}</span>
+      ${w ? `<span class="hh-dot">·</span><span class="hh-weather" title="${esc(weather.words(w.code))} in ${esc(w.place)}">${weather.icon(w.code, w.day)} ${w.temp}°</span>` : ""}</div>
+    <div class="hh-row"><h1 class="title hh-greet">${greeting(d.getHours())}</h1>
+      <button class="hh-shuffle" id="shuffle-all" aria-label="Shuffle all your music">${icon("shuffle")}</button></div></div>`;
+}
+
+/** The quick picks: what you've been playing, as a tidy grid of small tiles (Spotify-style). */
+function quickPick(a, i) {
+  return `<a class="qp appear" style="--d:${i * 30}ms" href="#/album/${esc(a.id)}"><img loading="lazy" src="${cover(a.coverArt, 120)}" alt="">
+    <span><b>${esc(a.name)}</b><small>${esc(a.artist || "")}</small></span></a>`;
 }
 
 function continueHTML() {
@@ -350,34 +356,40 @@ function continueHTML() {
 screens.home = async function home() {
   const token = routeToken;
   view.innerHTML = `${headerHTML()}<div id="continue-slot">${continueHTML()}</div>
+    <div class="qp-grid" id="quick"></div>
     <div class="section" id="mfy"><div class="section-head"><h2 class="h2">Made for You</h2></div>
-      <p class="sub">New mixes every morning, from your own music</p>
       <div class="shelf" id="mixes">${mixStore.mixes.length ? "" : '<div class="mix-ph"></div><div class="mix-ph"></div><div class="mix-ph"></div>'}</div></div>
     <div id="shelves"></div>`;
-  $("#shuffle-all").onclick = async () => { try { player.play(await lib.random(100)); } catch (e) { toast(e.message); } };
+  const shuffle = () => { $("#shuffle-all").onclick = async () => { try { player.play(await lib.random(100)); } catch (e) { toast(e.message); } }; };
+  shuffle();
   const cont = $("#continue");
   if (cont) cont.onclick = () => { player.resume(); };
   const renderMixes = (list) => {
     const box = $("#mixes");
     if (!box || token !== routeToken) return;
     if (!list.length) { $("#mfy").hidden = true; return; }
-    box.innerHTML = list.map((m, i) => `<a class="card mix-card appear" style="--d:${i * 40}ms" href="#/mix/${esc(m.id)}">${mixArt(m, 160)}<span>${esc(m.subtitle)}</span></a>`).join("");
+    box.innerHTML = list.map((m, i) => `<a class="card mix-card appear" style="--d:${i * 40}ms" href="#/mix/${esc(m.id)}" title="${esc(m.subtitle)}">${mixArt(m, 136)}</a>`).join("");
   };
   if (mixStore.mixes.length) renderMixes(mixStore.mixes);
   mixStore.refresh().then(renderMixes).catch(() => { if (!mixStore.mixes.length && $("#mfy")) $("#mfy").hidden = true; });
   weather.refresh().then((w) => {
     if (!w || token !== routeToken) return;
     const head = $(".home-head");
-    if (head) head.outerHTML = headerHTML();
-    $("#shuffle-all").onclick = async () => { try { player.play(await lib.random(100)); } catch (e) { toast(e.message); } };
+    if (head) { head.outerHTML = headerHTML(); shuffle(); }
   });
   try {
     const [recent, frequent, added] = await Promise.all(["recent", "frequent", "newest"].map((t) => lib.albums(t, 20)));
     if (token !== routeToken) return;
-    const shelf = (title, list) => list.length ? `<div class="section"><div class="section-head"><h2 class="h2">${title}</h2></div>
-      <div class="shelf">${list.map((a, i) => albumCard(a).replace('class="card"', `class="card appear" style="--d:${i * 30}ms"`)).join("")}</div></div>` : "";
-    $("#shelves").innerHTML = shelf("Recently Played", recent) + shelf("On Repeat", frequent) + shelf("Recently Added", added)
-      || `<div class="empty"><b>Your library is empty</b>Navidrome hasn't found any music yet.</div>`;
+    // one grid of what you've been playing (recent first, then favorites), and new music you haven't seen up there
+    const seen = new Set(), picks = [];
+    for (const a of [...recent, ...frequent]) { if (picks.length >= 6) break; if (!seen.has(a.id)) { seen.add(a.id); picks.push(a); } }
+    const fresh = added.filter((a) => !seen.has(a.id)).slice(0, 12);
+    $("#quick").innerHTML = picks.map(quickPick).join("");
+    $("#quick").hidden = !picks.length;
+    $("#shelves").innerHTML = (fresh.length ? `<div class="section"><div class="section-head"><h2 class="h2">New in Your Library</h2>
+      <a class="more" href="#/library">See all</a></div>
+      <div class="shelf">${fresh.map((a, i) => albumCard(a).replace('class="card"', `class="card small appear" style="--d:${i * 30}ms"`)).join("")}</div></div>` : "")
+      || (picks.length ? "" : `<div class="empty"><b>Your library is empty</b>Navidrome hasn't found any music yet.</div>`);
   } catch (e) { if ($("#shelves")) $("#shelves").innerHTML = errorBox(e); }
 };
 

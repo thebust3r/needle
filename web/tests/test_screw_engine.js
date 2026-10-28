@@ -56,10 +56,27 @@ let inMax = 0; for (let i = 1; i < x.length; i++) inMax = Math.max(inMax, Math.a
 let cutMax = 0;
 for (const ch of c.history) for (const g of ch.played || []) for (let i = Math.max(1, g.oc - 400); i < Math.min(l.length, g.oc + 400); i++) cutMax = Math.max(cutMax, Math.abs(l[i] - l[i - 1]));
 const added = c.lag / sr;
+// placed like a DJ: every automatic chop starts on the 1 (a kick: this song has kicks on 1 and 3), and adds whole bars
+let onTheOne = true, wholeBars = true;
+for (const ch of c.history) {
+  if (!ch.played) continue;
+  const k = Math.round((ch.played[0].at / sr - 0.21) / (60 / 84));
+  if (k % 2 !== 0) onTheOne = false;
+  const beatsAdded = ch.jumps.reduce((s, j) => s + j.J, 0) / p;
+  if (Math.abs(beatsAdded / 4 - Math.round(beatsAdded / 4)) > 0.01) wholeBars = false;
+}
+// and stays out of a breakdown: 20 s of beat, 12 s of just a quiet pad, then the beat again
+const bd = beat(84, 48, 0.21);
+for (let i = Math.floor(20 * sr); i < Math.floor(32 * sr); i++) bd[i] = 0.05 * Math.sin(2 * Math.PI * 220 * i / sr) + 0.02 * Math.sin(2 * Math.PI * 41.2 * i / sr);
+const bdRun = run(bd, "heavy").c;
+const inBreak = bdRun.history.filter((ch) => ch.played && ch.played[0].at / sr > 20.5 && ch.played[0].at / sr < 32).length;
+const afterBreak = bdRun.history.filter((ch) => ch.played && ch.played[0].at / sr > 32).length;
+console.log(`on the 1 ${onTheOne}, whole bars ${wholeBars}, chops in a breakdown ${inBreak}, after it ${afterBreak}`);
 const perMin = c.history.length;
 console.log(`chops ${perMin}/min (${Object.entries(moves).map(([k, v]) => k + " " + v).join(", ")}), worst off-beat ${worst.toFixed(1)}ms, repeats exact ${repeatOk}, resumes where it left off ${resumeOk}, added ${added.toFixed(1)}s, first at ${(c.history[0]?.played[0].at / sr).toFixed(1)}s, cut jump ${cutMax.toFixed(3)} vs music ${inMax.toFixed(3)}`);
 const light = run(x, "light").c.history.length;
 console.log(`light: ${light}/min`);
-if (perMin < 12 || light < 6 || Object.keys(moves).length < 4) { console.log("not enough chops / variety"); process.exitCode = 1; }
+if (!onTheOne || !wholeBars || inBreak > 0 || afterBreak < 1) { console.log("chops not placed musically"); process.exitCode = 1; }
+if (perMin < 6 || light < 2 || Object.keys(moves).length < 3 || !onTheOne || !wholeBars || inBreak > 0 || afterBreak < 1) { console.log("not enough chops / variety"); process.exitCode = 1; }
 const t0 = Date.now(); run(beat(90, 60), "heavy"); console.log(`60 s stereo in ${Date.now() - t0} ms`);
 if (!ok || worst > 15 || !repeatOk || !resumeOk || cutMax > inMax * 1.2 || added < 5) process.exitCode = 1;

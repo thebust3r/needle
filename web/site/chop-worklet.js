@@ -11,6 +11,8 @@ class BeatTracker {
     this.hop = 512; this.N = 1024;
     this.maxHops = Math.floor(this.o.win * sampleRate / this.hop);
     this.env = new Float32Array(this.maxHops);
+    this.envKick = new Float32Array(this.maxHops);    // low-end hits (kick, 808)
+    this.envSnare = new Float32Array(this.maxHops);   // mid-high hits (snare, clap)
     this.buf = new Float32Array(this.N);
     this.re = new Float32Array(this.N); this.im = new Float32Array(this.N);
     this.win = new Float32Array(this.N);
@@ -33,13 +35,17 @@ class BeatTracker {
     this.ph = new Float64Array(this.maxLag + 2);
     this.hist = new Float32Array(16);
     this.log = new Float64Array(512);            // beats already found, in song samples (chops play the past)
+    this.kickLog = new Float32Array(512);         // how hard the kick / snare / everything hit on each of those beats
+    this.snareLog = new Float32Array(512);
+    this.energyLog = new Float32Array(512);
     this.reset();
   }
   reset() {
     this.envCount = 0; this.fill = 0; this.period = 0; this.anchor = 0; this.confidence = 0; this.samplesSeen = 0;
     this.sinceEstimate = 0; this.level = 0; this.env.fill(0); this.buf.fill(0); this.prevBands.fill(0); this.A.fill(0);
     this.hist.fill(0); this.histSum = 0; this.estimates = 0;
-    this.logCount = 0; this.logEnd = 0;
+    this.logCount = 0; this.logEnd = 0; this.barPhase = 0; this.barSure = 0;
+    this.envKick.fill(0); this.envSnare.fill(0);
   }
   get bpm() { return this.period > 0 ? 60 * this.sampleRate / this.period : 0; }
   feed(x, count) {
@@ -65,13 +71,15 @@ class BeatTracker {
   frame() {
     for (let i = 0; i < this.N; i++) { this.re[i] = this.buf[i] * this.win[i]; this.im[i] = 0; }
     this.fft();
-    let flux = 0;
+    let flux = 0, kick = 0, snare = 0;
     for (let b = 0; b < 24; b++) {
       let s = 0; const a = this.edges[b], e = Math.max(a + 1, this.edges[b + 1]);
       for (let k = a; k < e; k++) s += Math.sqrt(this.re[k] * this.re[k] + this.im[k] * this.im[k]);
       const v = Math.log1p(10 * s / (e - a));
       const d = Math.max(0, v - this.prevBands[b]);
       flux += d;
+      if (b < 6) kick += d;                 // ~40-160 Hz
+      else if (b >= 11 && b < 19) snare += d;   // ~500 Hz - 3.5 kHz
       this.prevBands[b] = v;
     }
     flux /= 24;
@@ -80,10 +88,13 @@ class BeatTracker {
     this.histSum += flux - h[k]; h[k] = flux;
     const o = Math.max(0, flux - this.histSum / 16);
     this.env[this.envCount % this.maxHops] = o;
+    this.envKick[this.envCount % this.maxHops] = kick / 6;
+    this.envSnare[this.envCount % this.maxHops] = snare / 8;
     this.envCount++;
     const hps = this.sampleRate / this.hop;
     if (++this.sinceEstimate >= Math.floor(0.25 * hps) && this.envCount >= Math.floor(3 * hps)) { this.sinceEstimate = 0; this.estimate(); }
   }
+  band(arr, i) { return i < 0 || i >= this.envCount || this.envCount - i > this.maxHops ? 0 : arr[i % this.maxHops]; }
   e(i) { return i < 0 || i >= this.envCount || this.envCount - i > this.maxHops ? 0 : this.env[i % this.maxHops]; }
   estimate() {
     const o = this.o, n = Math.min(this.envCount, this.maxHops), hps = this.sampleRate / this.hop, start = this.envCount - n;
@@ -156,12 +167,68 @@ class BeatTracker {
       const until = this.samplesSeen - 0.3 * this.sampleRate;
       let b = this.grid(Math.max(this.logEnd, until - 4 * this.sampleRate));
       while (b < until) {
-        const last = this.logCount ? this.log[(this.logCount - 1) % 512] : -Infinity;
-        if (b - last > this.period * 0.5) { this.log[this.logCount % 512] = b; this.logCount++; }
+        const last = this.logCount ? this.log[(this.logCount - 1) % 512] : -Infinity, expect = last + this.period;
+        // keep the count continuous: one beat about a beat after the last. A grid that slid half a beat doesn't
+        // add an extra beat, and a gap gets filled in, so "the 1" never moves.
+        if (this.logCount && b <= expect - this.period * 0.45) { b += this.period; continue; }      // already have it
+        if (this.logCount && b > expect + this.period * 0.55 && b - last < 4 * this.period) b = expect;   // fill a gap
+        if (b - last > this.period * 0.5) {
+          // how hard things hit right on this beat (strongest within ±1 analysis step), and how busy the beat was
+          const h = Math.round((b - (this.N - this.hop)) / this.hop), k = this.logCount % 512;
+          let kk = 0, sn = 0, en = 0;
+          for (let j = h - 1; j <= h + 1; j++) { kk = Math.max(kk, this.band(this.envKick, j)); sn = Math.max(sn, this.band(this.envSnare, j)); }
+          const span = Math.max(1, Math.round(this.period / this.hop));
+          for (let j = h; j < h + span; j++) en += this.e(j);
+          this.log[k] = b; this.kickLog[k] = kk; this.snareLog[k] = sn; this.energyLog[k] = en / span;
+          this.logCount++;
+          this.findBar();
+        }
         b += this.period;
       }
       this.logEnd = until;
     }
+  }
+  /** Which beat is the "1": kicks land on 1 (and often 3), snares and claps on 2 and 4. Looks at the last 8 bars and
+      only changes its mind when another answer is clearly better. Bars are counted by beat number in the log. */
+  findBar() {
+    const n = Math.min(this.logCount, 32);
+    if (n < 8) return;
+    const score = new Float64Array(4);
+    for (let i = this.logCount - n; i < this.logCount; i++) {
+      const k = i % 512, pos = ((i % 4) + 4) % 4;
+      for (let q = 0; q < 4; q++) {
+        const d = (pos - q + 4) % 4;      // this beat's place in the bar if the bar starts at q
+        score[q] += d === 0 ? this.kickLog[k] * 1.0 - this.snareLog[k] * 0.4
+                  : d === 2 ? this.kickLog[k] * 0.5 - this.snareLog[k] * 0.2
+                  : this.snareLog[k] * 0.6 - this.kickLog[k] * 0.2;
+      }
+    }
+    let best = 0; for (let q = 1; q < 4; q++) if (score[q] > score[best]) best = q;
+    const cur = score[this.barPhase], margin = Math.abs(cur) * 0.15 + 1e-6;
+    if (best !== this.barPhase && score[best] > cur + margin) this.barPhase = best;
+    const sorted = [...score].sort((a, b) => b - a);
+    this.barSure = sorted[0] > 0 ? Math.min(1, (sorted[0] - sorted[1]) / sorted[0]) : 0;
+  }
+  /** The beat at or after `sample` with its number (beats count up through the song; the bar starts where
+      (number - barPhase) % 4 === 0). */
+  beatAt(sample) {
+    if (this.period <= 0) return null;
+    const n = Math.min(this.logCount, 512);
+    if (n && sample <= this.log[(this.logCount - 1) % 512] && sample >= this.log[(this.logCount - n) % 512]) {
+      let k = this.logCount - 1;
+      while (k > this.logCount - n && this.log[(k - 1) % 512] >= sample) k--;
+      return { pos: this.log[k % 512], num: k };
+    }
+    if (!n) return { pos: this.grid(sample), num: -1 };
+    // just ahead of the newest found beat: carry on from it, so the count (and where the 1 is) stays put
+    const lastPos = this.log[(this.logCount - 1) % 512], k = Math.max(1, Math.ceil((sample - lastPos) / this.period - 1e-9));
+    return { pos: lastPos + k * this.period, num: this.logCount - 1 + k };
+  }
+  /** How busy the music was over the `beats` beats before beat number `num` (0 if unknown). */
+  energyBefore(num, beats) {
+    let s = 0, c = 0;
+    for (let i = num - beats; i < num; i++) if (i >= 0 && i < this.logCount && this.logCount - i <= 512) { s += this.energyLog[i % 512]; c++; }
+    return c ? s / c : 0;
   }
   grid(sample) { return this.anchor + Math.ceil((sample - this.anchor) / this.period) * this.period; }
   /** The first beat at or after `sample`: from the beats already found if it's in the past, else from the grid. */
@@ -177,23 +244,30 @@ class BeatTracker {
   }
 }
 
-// how often a chop can start (in beats) and how likely it is each time; heavy also picks the wilder moves more
-// "live" = no automatic chops, you tap them (see trigger)
-const CHOPS = { off: null, light: { every: 4, chance: 0.45 }, heavy: { every: 4, chance: 1 }, live: null };
+// Automatic chops: a chance at the top of every `bars` bars (on the "1"), and every move adds whole bars, so the
+// song never loses its count. "live" = no automatic chops, you tap them (see trigger).
+const CHOPS = { off: null, light: { bars: 4, chance: 0.75 }, heavy: { bars: 2, chance: 0.9 }, live: null };
 
-/** The moves, as cuts between the live record and copies that are behind. Each cut: [length, delay] in beats.
-    The song's own timeline keeps running underneath, like the second deck. */
+/** The moves, as [length, delay] pairs in beats (the playhead jumps back so it's `delay` behind, plays `length`).
+    The song carries on from where the chop started once it's done. */
 const MOVES = {
+  // live pads (you choose when)
   repeatBeat: [[1, 1]],                        // hear the last beat again
   runBack: [[2, 2]],                           // run back the last two beats (about a line)
   stutter: [[0.5, 0.5], [0.5, 1], [0.5, 1.5]], // "ch-ch-ch": the same half beat three times
   doubleUp: [[1, 1], [1, 2]],                  // the last beat twice
   backItUp: [[4, 4]],                          // back up a whole bar
-  loop: [[1, 1]],                              // live only: the last beat, over and over while held
+  loop: [[1, 1]],                              // the last beat, over and over while held
+  // automatic: each adds exactly one bar (or two), landing back on the 1
+  barRepeat: [[4, 4]],                                                   // the last bar again
+  halfBarTwice: [[2, 2], [2, 4]],                                        // the end of the bar, twice
+  lastBeat4: [[1, 1], [1, 2], [1, 3], [1, 4]],                           // "ba-ba-ba-ba" into the 1
+  stutterBuild: [[1, 1], [1, 2], [0.5, 2.5], [0.5, 3], [0.5, 3.5], [0.5, 4]],   // beat, beat, then faster into the 1
+  phraseBack: [[8, 8]],                                                  // run back two bars (end of a phrase)
 };
 const PICKS = {
-  light: [["runBack", 0.45], ["repeatBeat", 0.3], ["stutter", 0.15], ["doubleUp", 0.1]],
-  heavy: [["stutter", 0.3], ["runBack", 0.25], ["doubleUp", 0.2], ["repeatBeat", 0.1], ["backItUp", 0.15]],
+  light: [["barRepeat", 0.35], ["halfBarTwice", 0.35], ["lastBeat4", 0.15], ["stutterBuild", 0.15]],
+  heavy: [["halfBarTwice", 0.25], ["stutterBuild", 0.25], ["barRepeat", 0.2], ["lastBeat4", 0.15], ["phraseBack", 0.15]],
 };
 
 class Chopper {
@@ -214,7 +288,7 @@ class Chopper {
   reset() {
     this.tracker.reset();
     this.wp = 0; this.rp = 0; this.oc = 0;       // write position, play position (both in song samples), samples played
-    this.beatsSeen = 0; this.lastBeat = -1; this.active = null; this.history = []; this.cooldownUntil = 0;
+    this.beatsSeen = 0; this.lastBeat = -1; this.active = null; this.history = []; this.cooldownUntil = 0; this.lastMove = null;
     this.holding = false; this.frozen = false; this.resuming = 0;
     this.scr = null;
     this.rings.forEach((r) => r.fill(0));
@@ -375,30 +449,47 @@ class Chopper {
   }
   release() { this.holding = false; }
 
+  /** Automatic chops, placed like a DJ would: on the "1" at the top of every few bars (bigger moves at the end of an
+      8-bar phrase), only while the song is going (not in a quiet intro or breakdown), never the same move twice in a
+      row, and always adding whole bars so the song keeps its count. */
   plan(frames, conf, amount) {
     const t = this.tracker;
     if (t.confidence <= 0.15 || t.period <= 0 || t.samplesSeen <= this.sampleRate * 4) return;
-    // beats in the song as you hear it (the playhead), counted as they go by
     const horizon = this.rp + frames + Math.max(this.fade * 2, Math.min(t.period * 0.5, 8192));
-    let beat = t.nextBeat(Math.max(this.rp, this.lastBeat + t.period * 0.5));
-    while (beat !== null && beat < horizon) {
-      if (beat > this.lastBeat + t.period * 0.5) {
-        this.lastBeat = beat;
-        this.beatsSeen++;
-        const start = this.oc + Math.round(beat - this.rp);
-        if (this.beatsSeen % conf.every === 0 && beat - this.rp > this.fade && start >= this.cooldownUntil && this.random() < conf.chance) {
-          let roll = this.random(), name = PICKS[amount][0][0];
-          for (const [n, w] of PICKS[amount]) { if (roll < w) { name = n; break; } roll -= w; }
-          const { jumps, end } = this.jumpsFor(name, start, t.period);
-          if (this.fits(jumps.reduce((s, j) => s + j.J, 0))) {
-            this.active = { name, start, jumps, end, next: 0 };
-            this.history.push(this.active);
-            if (this.history.length > 64) this.history.shift();
-            return;
-          }
-        }
+    let at = Math.max(this.rp + this.fade + 1, this.lastBeat + t.period * 0.5);
+    for (let guard = 0; guard < 8; guard++) {
+      const beat = t.beatAt(at);
+      if (!beat || beat.pos >= horizon) return;
+      at = beat.pos + t.period * 0.5;
+      if (beat.pos <= this.lastBeat + t.period * 0.5) continue;
+      this.lastBeat = beat.pos;
+      if (beat.num < 8) continue;                                 // wait until the bar's been found
+      const inBar = ((beat.num - t.barPhase) % 4 + 4) % 4;
+      if (inBar !== 0) continue;
+      const bar = Math.floor((beat.num - t.barPhase) / 4);
+      if (bar % conf.bars !== 0) continue;
+      // only while the song is going: the last bar is about as busy as the last few
+      const recent = t.energyBefore(beat.num, 4), usual = t.energyBefore(beat.num, 16);
+      if (usual <= 0 || recent < usual * 0.6) continue;
+      if (this.random() >= conf.chance) continue;
+      const phraseEnd = bar % 8 === 0;
+      let name = null;
+      for (let tries = 0; tries < 6 && !name; tries++) {
+        let roll = this.random(), pick = PICKS[amount][0][0];
+        for (const [n, w] of PICKS[amount]) { if (roll < w) { pick = n; break; } roll -= w; }
+        if (pick === this.lastMove) continue;
+        if (pick === "phraseBack" && !phraseEnd) continue;        // two bars back only where a phrase ends
+        name = pick;
       }
-      beat += t.period;
+      if (!name) continue;
+      const start = this.oc + Math.round(beat.pos - this.rp);
+      const { jumps, end } = this.jumpsFor(name, start, t.period);
+      if (!this.fits(jumps.reduce((s, j) => s + j.J, 0))) continue;
+      this.active = { name, start, jumps, end, next: 0, beat: beat.num };
+      this.lastMove = name;
+      this.history.push(this.active);
+      if (this.history.length > 64) this.history.shift();
+      return;
     }
   }
 }

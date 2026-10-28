@@ -13,6 +13,14 @@ enum AppTab: String, CaseIterable {
     }
 }
 
+/// Lets screens outside the tabs (Now Playing) open a page in the current tab.
+@Observable final class Navigator {
+    static let shared = Navigator()
+    private(set) var request: ArtistRoute?
+    private(set) var token = 0
+    func open(_ route: ArtistRoute) { request = route; token += 1 }
+}
+
 struct RootView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(Player.self) private var player
@@ -20,6 +28,8 @@ struct RootView: View {
     @AppStorage("skippedSetup") private var skippedSetup = false
     @State private var tab: AppTab = .home
     @State private var showNowPlaying = false
+    @State private var paths: [AppTab: NavigationPath] = [:]
+    @State private var nav = Navigator.shared
     @Namespace private var zoom
 
     var body: some View {
@@ -58,10 +68,21 @@ struct RootView: View {
         .fullScreenCover(isPresented: $showNowPlaying) { NowPlayingView().zoomDestination("nowplaying").environment(\.zoomNamespace, zoom) }
         .environment(\.zoomNamespace, zoom)
         .overlay(alignment: .top) { ErrorToast() }
+        .onChange(of: nav.token) { _, _ in
+            guard let route = nav.request else { return }
+            // close Now Playing, then open the page in the tab you're on (Settings has no pages: use Home)
+            showNowPlaying = false
+            if tab == .settings { tab = .home }
+            let t = tab
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(350))
+                paths[t, default: NavigationPath()].append(route)
+            }
+        }
     }
 
     private func tabContent<V: View>(_ t: AppTab, @ViewBuilder _ content: () -> V) -> some View {
-        NavigationStack { content() }
+        NavigationStack(path: Binding(get: { paths[t] ?? NavigationPath() }, set: { paths[t] = $0 })) { content() }
             .opacity(tab == t ? 1 : 0)
             .allowsHitTesting(tab == t)
             .accessibilityHidden(tab != t)

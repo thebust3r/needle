@@ -45,14 +45,16 @@ enum ChopAmount: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
     /// How many beats between chances to chop, and how likely a chop is at each chance.
-    var every: Int { 4 }
-    var chance: Double { self == .heavy ? 1 : 0.45 }
+    /// Automatic chops get a chance at the top of every `bars` bars (on the "1"), and every move adds whole bars,
+    /// so the song never loses its count.
+    var bars: Int { self == .heavy ? 2 : 4 }
+    var chance: Double { self == .heavy ? 0.9 : 0.75 }
     /// Which moves, and how often: heavy picks the wilder ones more.
     var picks: [(ChopMove, Double)] {
         switch self {
         case .off, .live: return []
-        case .light: return [(.runBack, 0.45), (.repeatBeat, 0.3), (.stutter, 0.15), (.doubleUp, 0.1)]
-        case .heavy: return [(.stutter, 0.3), (.runBack, 0.25), (.doubleUp, 0.2), (.repeatBeat, 0.1), (.backItUp, 0.15)]
+        case .light: return [(.barRepeat, 0.35), (.halfBarTwice, 0.35), (.lastBeat4, 0.15), (.stutterBuild, 0.15)]
+        case .heavy: return [(.halfBarTwice, 0.25), (.stutterBuild, 0.25), (.barRepeat, 0.2), (.lastBeat4, 0.15), (.phraseBack, 0.15)]
         }
     }
 }
@@ -61,6 +63,7 @@ enum ChopAmount: String, CaseIterable, Identifiable, Codable {
 /// the song keeps running underneath, like the second deck.
 enum ChopMove: Int, CaseIterable {
     case repeatBeat, runBack, stutter, doubleUp, backItUp, loop
+    case barRepeat, halfBarTwice, lastBeat4, stutterBuild, phraseBack       // automatic: each adds whole bars
     var cuts: [(Double, Double)] {
         switch self {
         case .repeatBeat: return [(1, 1)]                          // hear the last beat again
@@ -69,6 +72,11 @@ enum ChopMove: Int, CaseIterable {
         case .doubleUp: return [(1, 1), (1, 2)]                    // the last beat twice
         case .backItUp: return [(4, 4)]                            // back up a whole bar
         case .loop: return [(1, 1)]                                // live: the last beat, over and over while held
+        case .barRepeat: return [(4, 4)]                                                    // the last bar again
+        case .halfBarTwice: return [(2, 2), (2, 4)]                                         // the end of the bar, twice
+        case .lastBeat4: return [(1, 1), (1, 2), (1, 3), (1, 4)]                            // "ba-ba-ba-ba" into the 1
+        case .stutterBuild: return [(1, 1), (1, 2), (0.5, 2.5), (0.5, 3), (0.5, 3.5), (0.5, 4)]   // faster into the 1
+        case .phraseBack: return [(8, 8)]                                                   // two bars back (phrase end)
         }
     }
     var label: String {
@@ -79,6 +87,11 @@ enum ChopMove: Int, CaseIterable {
         case .doubleUp: return "Double up"
         case .backItUp: return "Back it up"
         case .loop: return "Loop"
+        case .barRepeat: return "Bar again"
+        case .halfBarTwice: return "Run it back"
+        case .lastBeat4: return "Ba-ba-ba-ba"
+        case .stutterBuild: return "Stutter build"
+        case .phraseBack: return "Back two bars"
         }
     }
 }
@@ -198,6 +211,12 @@ final class BeatTracker {
     private let minLag: Int, maxLag: Int
     private(set) var level: Float = 0        // slow running loudness
     private var log = [Double](repeating: 0, count: 512)   // beats already found, in song samples (chops play the past)
+    private var kickLog = [Float](repeating: 0, count: 512)   // how hard the kick / snare / everything hit on each beat
+    private var snareLog = [Float](repeating: 0, count: 512)
+    private var energyLog = [Float](repeating: 0, count: 512)
+    private var envKick: [Float], envSnare: [Float]
+    /// Which beat number starts a bar: (number - barPhase) % 4 == 0.
+    private(set) var barPhase = 0
     private var logCount = 0
     private var logEnd = 0.0
 
@@ -220,6 +239,8 @@ final class BeatTracker {
         let N = Self.N
         maxHops = Int(8.0 * sampleRate / Double(Self.hop))
         env = [Float](repeating: 0, count: maxHops)
+        envKick = [Float](repeating: 0, count: maxHops)
+        envSnare = [Float](repeating: 0, count: maxHops)
         buf = [Float](repeating: 0, count: N)
         re = [Float](repeating: 0, count: N); im = [Float](repeating: 0, count: N)
         window = (0..<N).map { Float(0.5 - 0.5 * cos(2 * Double.pi * Double($0) / Double(N - 1))) }
@@ -236,7 +257,8 @@ final class BeatTracker {
 
     func reset() {
         envCount = 0; fill = 0; period = 0; anchor = 0; confidence = 0; samplesSeen = 0; sinceEstimate = 0; level = 0
-        estimates = 0; histSum = 0; logCount = 0; logEnd = 0
+        estimates = 0; histSum = 0; logCount = 0; logEnd = 0; barPhase = 0
+        for i in envKick.indices { envKick[i] = 0; envSnare[i] = 0 }
         for i in env.indices { env[i] = 0 }
         for i in buf.indices { buf[i] = 0 }
         for i in prevBands.indices { prevBands[i] = 0 }
@@ -275,13 +297,15 @@ final class BeatTracker {
     private func frame() {
         for i in 0..<Self.N { re[i] = buf[i] * window[i]; im[i] = 0 }
         fft()
-        var flux: Float = 0
+        var flux: Float = 0, kick: Float = 0, snare: Float = 0
         for b in 0..<24 {
             let a = edges[b], e = max(a + 1, edges[b + 1])
             var s: Float = 0
             for k in a..<e { s += (re[k] * re[k] + im[k] * im[k]).squareRoot() }
             let v = log1p(10 * s / Float(e - a))
-            flux += max(0, v - prevBands[b])
+            let d = max(0, v - prevBands[b])
+            flux += d
+            if b < 6 { kick += d } else if b >= 11 && b < 19 { snare += d }     // ~40-160 Hz, ~500 Hz-3.5 kHz
             prevBands[b] = v
         }
         flux /= 24
@@ -289,10 +313,17 @@ final class BeatTracker {
         let k = envCount % 16
         histSum += flux - hist[k]; hist[k] = flux
         env[envCount % maxHops] = max(0, flux - histSum / 16)
+        envKick[envCount % maxHops] = kick / 6
+        envSnare[envCount % maxHops] = snare / 8
         envCount += 1
         sinceEstimate += 1
         let hps = sampleRate / Double(Self.hop)
         if sinceEstimate >= Int(0.25 * hps), envCount >= Int(3 * hps) { sinceEstimate = 0; estimate() }
+    }
+
+    private func band(_ a: [Float], _ i: Int) -> Float {
+        guard i >= 0, i < envCount, envCount - i <= maxHops else { return 0 }
+        return a[i % maxHops]
     }
 
     private func e(_ i: Int) -> Double {     // onset at an absolute hop index (0 if forgotten or not yet here)
@@ -391,8 +422,21 @@ final class BeatTracker {
             let until = Double(samplesSeen) - 0.3 * sampleRate
             var b = grid(max(logEnd, until - 4 * sampleRate))
             while b < until {
-                let last = logCount > 0 ? log[(logCount - 1) % 512] : -Double.infinity
-                if b - last > period * 0.5 { log[logCount % 512] = b; logCount += 1 }
+                let last = logCount > 0 ? log[(logCount - 1) % 512] : -Double.infinity, expect = last + period
+                // keep the count continuous: a grid that slid doesn't add an extra beat, and a gap gets filled in
+                if logCount > 0, b <= expect - period * 0.45 { b += period; continue }
+                if logCount > 0, b > expect + period * 0.55, b - last < 4 * period { b = expect }
+                if b - last > period * 0.5 {
+                    // how hard things hit right on this beat, and how busy the beat was
+                    let h = Int(((b - Double(Self.N - Self.hop)) / Double(Self.hop)).rounded()), k = logCount % 512
+                    var kk: Float = 0, sn: Float = 0, en = 0.0
+                    for j in (h - 1)...(h + 1) { kk = max(kk, band(envKick, j)); sn = max(sn, band(envSnare, j)) }
+                    let span = max(1, Int((period / Double(Self.hop)).rounded()))
+                    for j in h..<(h + span) { en += e(j) }
+                    log[k] = b; kickLog[k] = kk; snareLog[k] = sn; energyLog[k] = Float(en / Double(span))
+                    logCount += 1
+                    findBar()
+                }
                 b += period
             }
             logEnd = until
@@ -400,6 +444,51 @@ final class BeatTracker {
     }
 
     private func grid(_ sample: Double) -> Double { anchor + ((sample - anchor) / period).rounded(.up) * period }
+
+    /// Which beat is the "1": kicks land on 1 (and often 3), snares and claps on 2 and 4. Looks at the last 8 bars and
+    /// only changes its mind when another answer is clearly better.
+    private func findBar() {
+        let n = min(logCount, 32)
+        guard n >= 8 else { return }
+        var score = [Double](repeating: 0, count: 4)
+        for i in (logCount - n)..<logCount {
+            let k = i % 512, pos = i % 4, kick = Double(kickLog[k]), snare = Double(snareLog[k])
+            for q in 0..<4 {
+                switch (pos - q + 4) % 4 {
+                case 0: score[q] += kick - snare * 0.4
+                case 2: score[q] += kick * 0.5 - snare * 0.2
+                default: score[q] += snare * 0.6 - kick * 0.2
+                }
+            }
+        }
+        var best = 0
+        for q in 1..<4 where score[q] > score[best] { best = q }
+        let cur = score[barPhase]
+        if best != barPhase, score[best] > cur + abs(cur) * 0.15 + 1e-6 { barPhase = best }
+    }
+
+    /// The beat at or after `sample` and its number (beats count up through the song).
+    func beatAt(_ sample: Double) -> (pos: Double, num: Int)? {
+        guard period > 0 else { return nil }
+        let n = min(logCount, 512)
+        guard n > 0 else { return (grid(sample), -1) }
+        if sample <= log[(logCount - 1) % 512], sample >= log[(logCount - n) % 512] {
+            var k = logCount - 1
+            while k > logCount - n, log[(k - 1) % 512] >= sample { k -= 1 }
+            return (log[k % 512], k)
+        }
+        // just ahead of the newest found beat: carry on from it, so the count (and where the 1 is) stays put
+        let lastPos = log[(logCount - 1) % 512]
+        let k = max(1, Int(((sample - lastPos) / period - 1e-9).rounded(.up)))
+        return (lastPos + Double(k) * period, logCount - 1 + k)
+    }
+
+    /// How busy the music was over the `beats` beats before beat number `num` (0 if unknown).
+    func energy(before num: Int, beats: Int) -> Double {
+        var s = 0.0, c = 0
+        for i in (num - beats)..<num where i >= 0 && i < logCount && logCount - i <= 512 { s += Double(energyLog[i % 512]); c += 1 }
+        return c > 0 ? s / Double(c) : 0
+    }
 
     /// The first beat at or after `sample`: from the beats already found if it's in the past, else from the grid.
     func nextBeat(atOrAfter sample: Double) -> Double? {
@@ -440,6 +529,7 @@ final class Chopper {
     private(set) var rp = 0          // play position (song samples)
     private(set) var oc = 0          // samples played
     private var beatsSeen = 0
+    private var lastMove: ChopMove?
     private var lastBeat: Double = -1
     private var cooldownUntil = 0
     private var rng: UInt64
@@ -472,7 +562,7 @@ final class Chopper {
 
     func reset() {
         tracker.reset()
-        wp = 0; rp = 0; oc = 0; beatsSeen = 0; lastBeat = -1; cooldownUntil = 0; active = nil; holding = false; scr = nil
+        wp = 0; rp = 0; oc = 0; beatsSeen = 0; lastMove = nil; lastBeat = -1; cooldownUntil = 0; active = nil; holding = false; scr = nil
         history.removeAll(keepingCapacity: true); count = 0
     }
 
@@ -655,33 +745,45 @@ final class Chopper {
 
     func release() { holding = false }
 
+    /// Automatic chops, placed like a DJ would: on the "1" at the top of every few bars (two bars back only at the end
+    /// of an 8-bar phrase), only while the song is going (not in a quiet intro or breakdown), never the same move twice
+    /// in a row, and always adding whole bars so the song keeps its count.
     private func plan(frames: Int, amount: ChopAmount) {
         let t = tracker
         guard t.confidence > 0.15, t.period > 0, t.samplesSeen > Int(sampleRate * 4) else { return }
-        // beats in the song as you hear it (the playhead), counted as they go by
         let horizon = Double(rp + frames) + max(Double(fade * 2), min(t.period * 0.5, 8192))
-        guard var beat = t.nextBeat(atOrAfter: max(Double(rp), lastBeat + t.period * 0.5)) else { return }
-        while beat < horizon {
-            if beat > lastBeat + t.period * 0.5 {
-                lastBeat = beat
-                beatsSeen += 1
-                let start = oc + Int((beat - Double(rp)).rounded())
-                if beatsSeen % amount.every == 0, beat - Double(rp) > Double(fade), start >= cooldownUntil, random() < amount.chance {
-                    var roll = random()
-                    var move = amount.picks[0].0
-                    for (m, w) in amount.picks { if roll < w { move = m; break }; roll -= w }
-                    let (j, end) = jumps(move, at: start, period: t.period)
-                    if fits(j.reduce(0) { $0 + $1.J }) {
-                        let chop = Chop(move: move, start: start, jumps: j, end: end)
-                        active = chop
-                        history.append(chop)
-                        if history.count > 64 { history.removeFirst() }
-                        count += 1
-                        return
-                    }
-                }
+        var at = max(Double(rp + fade + 1), lastBeat + t.period * 0.5)
+        for _ in 0..<8 {
+            guard let beat = t.beatAt(at), beat.pos < horizon else { return }
+            at = beat.pos + t.period * 0.5
+            if beat.pos <= lastBeat + t.period * 0.5 { continue }
+            lastBeat = beat.pos
+            guard beat.num >= 8 else { continue }                       // wait until the bar's been found
+            guard ((beat.num - t.barPhase) % 4 + 4) % 4 == 0 else { continue }
+            let bar = (beat.num - t.barPhase) / 4
+            guard bar % amount.bars == 0 else { continue }
+            let recent = t.energy(before: beat.num, beats: 4), usual = t.energy(before: beat.num, beats: 16)
+            guard usual > 0, recent >= usual * 0.6 else { continue }    // only while the song is going
+            guard random() < amount.chance else { continue }
+            let phraseEnd = bar % 8 == 0
+            var move: ChopMove?
+            for _ in 0..<6 where move == nil {
+                var roll = random(), pick = amount.picks[0].0
+                for (m, w) in amount.picks { if roll < w { pick = m; break }; roll -= w }
+                if pick == lastMove || (pick == .phraseBack && !phraseEnd) { continue }
+                move = pick
             }
-            beat += t.period
+            guard let move else { continue }
+            let start = oc + Int((beat.pos - Double(rp)).rounded())
+            let (j, end) = jumps(move, at: start, period: t.period)
+            guard fits(j.reduce(0) { $0 + $1.J }) else { continue }
+            let chop = Chop(move: move, start: start, jumps: j, end: end)
+            active = chop
+            lastMove = move
+            history.append(chop)
+            if history.count > 64 { history.removeFirst() }
+            count += 1
+            return
         }
     }
 }

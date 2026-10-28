@@ -4,6 +4,7 @@ import SwiftUI
 
 struct NowPlayingView: View {
     @Environment(Player.self) private var player
+    @Environment(AppModel.self) private var app
     @Environment(Equalizer.self) private var eq
     @Environment(\.dismiss) private var dismiss
 
@@ -202,13 +203,33 @@ struct NowPlayingView: View {
         .accessibilityLabel(viz.on ? "Visualizer. Double-tap to show the album art" : "Album art. Double-tap to show the visualizer")
     }
 
+    /// Opens the artist's page (looking them up by name for a song from your Files).
+    private func openArtist() async {
+        guard let t = player.current else { return }
+        if let id = t.artistId { Navigator.shared.open(ArtistRoute(id: id, name: t.artist)); return }
+        guard !t.artist.isEmpty, let r = try? await app.client.search(t.artist), let list = r.artist, !list.isEmpty else {
+            player.errorMessage = "Couldn't find \(t.artist) in your library."
+            return
+        }
+        let a = list.first { $0.name.caseInsensitiveCompare(t.artist) == .orderedSame } ?? list[0]
+        Navigator.shared.open(ArtistRoute(id: a.id, name: a.name))
+    }
+
     private var titleRow: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(player.current?.title ?? "Not Playing")
                     .font(Theme.title(22)).lineLimit(1).minimumScaleFactor(0.75)
-                Text(player.current?.artist ?? "")
-                    .font(.title3).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                // tap the artist to go to their page
+                Button { Task { await openArtist() } } label: {
+                    Text(player.current?.artist ?? "")
+                        .font(.title3).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressScale())
+                .disabled(player.current == nil)
+                .accessibilityLabel("\(player.current?.artist ?? ""). Go to artist")
             }
             Spacer()
             if let t = player.current, !t.isLocal {
