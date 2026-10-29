@@ -17,7 +17,7 @@ const importer = (() => {
       });
     } catch { throw new Error("Can't reach the NAS."); }
     const type = r.headers.get("Content-Type") || "";
-    if (!type.includes("json")) throw new Error("The import helper isn't running yet. Update the Needle project on the NAS with the new compose file (see the README).");
+    if (!type.includes("json")) throw new Error("The import helper isn't running yet. Update the Platter project on the NAS (the one called needle) with the new compose file (see the README).");
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || `Error ${r.status}`);
     return j;
@@ -51,7 +51,7 @@ const importer = (() => {
   async function home() {
     stopPolling();
     view.innerHTML = `${backLink()}<h1 class="title">Import Playlist</h1>
-      <p class="note" style="margin-top:-6px">Paste a Spotify playlist or album link. Needle finds the songs you already have and makes a playlist in the same order, then can download the rest.</p>
+      <p class="note" style="margin-top:-6px">Paste a Spotify playlist or album link. Platter finds the songs you already have and makes a playlist in the same order, then can download the rest.</p>
       <div class="form imp-form">
         <label><span>Spotify link or song list</span><textarea id="imp-src" rows="4" placeholder="https://open.spotify.com/playlist/…&#10;&#10;or one song per line:  Artist - Song" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea></label>
         <label><span>Playlist name (optional)</span><input id="imp-name" placeholder="Uses the Spotify name"></label>
@@ -125,7 +125,7 @@ const importer = (() => {
           <a class="pill" href="#/playlist/${esc(j.playlistId)}">${icon("playlist")}Open Playlist</a></div>` : ""}
       ${missing.length && !working ? `<div class="imp-card">
           <b>${missing.length} song${missing.length === 1 ? " isn't" : "s aren't"} in your library</b>
-          <span>Download ${missing.length === 1 ? "it" : "them"} and Needle adds ${missing.length === 1 ? "it" : "them"} to this playlist in the right spot${missing.length === 1 ? "" : "s"}.</span>
+          <span>Download ${missing.length === 1 ? "it" : "them"} and Platter adds ${missing.length === 1 ? "it" : "them"} to this playlist in the right spot${missing.length === 1 ? "" : "s"}.</span>
           <div class="imp-choices">
             <button class="pill primary" data-get="song" ${canSong ? "" : "disabled"}>Just the Songs<small>Soulseek</small></button>
             <button class="pill" data-get="album" ${canAlbum ? "" : "disabled"}>Whole Albums<small>Lidarr</small></button>

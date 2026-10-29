@@ -34,7 +34,7 @@ check("first run explains how to install", "drop the Needle web zip" in out)
 
 # 1. the real release zip
 _ver = open(f"{WEB}/site/version.txt").read().strip()
-rel = f"Needle-web-v{_ver}.zip"
+rel = f"Platter-web-v{_ver}.zip"
 shutil.copy(f"{WEB}/dist/{rel}", os.path.join(app, "updates", rel))
 out = run()
 check("release zip installs index.html, app.js, viz.js, lyrics.js", all(os.path.isfile(site(f)) for f in ("index.html", "app.js", "viz.js", "lyrics.js", "icons/icon-180.png")))

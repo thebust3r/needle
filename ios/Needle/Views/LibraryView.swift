@@ -326,7 +326,7 @@ struct OnPhoneView: View {
                 .font(.headline)
                 .padding(.horizontal, 20)
 
-                Text("You can also drop music into Files › On My iPhone › Needle. It shows up here automatically.")
+                Text("You can also drop music into Files › On My iPhone › Platter. It shows up here automatically.")
                     .font(.footnote).foregroundStyle(Theme.secondary).padding(.horizontal, 20)
 
                 if local.isImporting { HStack { ProgressView(); Text("Importing…") }.padding(.horizontal, 20) }

@@ -37,7 +37,7 @@ struct SubsonicClient {
             URLQueryItem(name: "t", value: token),
             URLQueryItem(name: "s", value: salt),
             URLQueryItem(name: "v", value: Self.apiVersion),
-            URLQueryItem(name: "c", value: "Needle"),
+            URLQueryItem(name: "c", value: "Platter"),
             URLQueryItem(name: "f", value: "json"),
         ]
     }

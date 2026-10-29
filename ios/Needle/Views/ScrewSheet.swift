@@ -60,7 +60,7 @@ struct ScrewSheet: View {
                     .accessibilityIdentifier("screw-status")
                 }
             }
-            Text("Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Needle has found the rhythm.")
+            Text("Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Platter has found the rhythm.")
                 .font(.caption).foregroundStyle(Theme.tertiary)
         }
         .padding(22)

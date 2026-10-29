@@ -287,7 +287,9 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; bord
 
 /* ---------- sign in ---------- */
 .welcome { min-height: 100vh; display: flex; flex-direction: column; justify-content: flex-end; padding: 28px 28px calc(var(--safe-b) + 28px); gap: 16px; }
-.welcome .mark { color: var(--accent); font-size: 54px; }
+.welcome .mark { display: flex; align-items: center; gap: 14px; }
+.welcome .mark img { width: 64px; height: 64px; border-radius: 15px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+.welcome .mark b { font: 800 26px/1 var(--wide); font-stretch: expanded; }
 .welcome h1 { font: 800 38px/1.08 var(--wide); font-stretch: expanded; margin: 0; }
 .welcome p { color: var(--sec); margin: 0; }
 .welcome .form { margin: 12px 0 0; }

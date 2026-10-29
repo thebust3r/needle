@@ -77,7 +77,7 @@ enum HelperProblem: LocalizedError {
     case notRunning, noAddress, message(String)
     var errorDescription: String? {
         switch self {
-        case .notRunning: return "The import helper isn't running. Update the Needle project on the NAS with the new compose file, and check the Needle web address in Settings."
+        case .notRunning: return "The import helper isn't running. Update the Platter project on the NAS (the one called needle) with the new compose file, and check the Platter web address in Settings."
         case .noAddress: return "Add your server in Settings first."
         case .message(let m): return m
         }

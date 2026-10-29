@@ -126,7 +126,7 @@ final class LyricsStore {
             c.queryItems = items.filter { !($0.value ?? "").isEmpty }
             var req = URLRequest(url: c.url!)
             req.timeoutInterval = 15
-            req.setValue("Needle/1.0 (personal music player)", forHTTPHeaderField: "User-Agent")
+            req.setValue("Platter/1.0 (personal music player)", forHTTPHeaderField: "User-Agent")
             let (data, response) = try await URLSession.shared.data(for: req)
             if (response as? HTTPURLResponse)?.statusCode == 404 { return nil }
             return try JSONDecoder().decode(T.self, from: data)

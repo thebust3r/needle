@@ -6,8 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.8"
-    CURRENT_PROJECT_VERSION: "9"
+    MARKETING_VERSION: "1.9"
+    CURRENT_PROJECT_VERSION: "10"
 targets:
   Needle:
     type: application
@@ -20,7 +20,7 @@ targets:
     info:
       path: Needle/Info.plist
       properties:
-        CFBundleDisplayName: Needle
+        CFBundleDisplayName: Platter
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen:

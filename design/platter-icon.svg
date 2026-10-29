@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7b4dff"/>
+      <stop offset="0.55" stop-color="#c03fd8"/>
+      <stop offset="1" stop-color="#ff5d8f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vinyl" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#141419"/>
+      <stop offset="0.36" stop-color="#101015"/>
+      <stop offset="0.37" stop-color="#121217"/>
+      <stop offset="1" stop-color="#08080b"/>
+    </radialGradient>
+    <linearGradient id="label" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b5fff2"/>
+      <stop offset="0.5" stop-color="#6ee8d9"/>
+      <stop offset="1" stop-color="#2fb9c9"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.45" stop-color="#fff" stop-opacity="0.11"/>
+      <stop offset="0.5" stop-color="#fff" stop-opacity="0.02"/>
+      <stop offset="0.6" stop-color="#fff" stop-opacity="0.07"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8d93a3"/>
+      <stop offset="0.5" stop-color="#f4f6fb"/>
+      <stop offset="1" stop-color="#a6abb8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="22" stdDeviation="26" flood-color="#000" flood-opacity="0.6"/>
+    </filter>
+    <filter id="armshadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="-10" dy="16" stdDeviation="10" flood-color="#000" flood-opacity="0.55"/>
+    </filter>
+    <clipPath id="disc"><circle cx="470" cy="548" r="356"/></clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <circle cx="470" cy="548" r="420" fill="url(#glow)"/>
+
+  <!-- the record -->
+  <g filter="url(#shadow)">
+    <circle cx="470" cy="548" r="356" fill="url(#vinyl)"/>
+  </g>
+  <g clip-path="url(#disc)" fill="none" stroke="#ffffff">
+    <circle cx="470" cy="548" r="336" stroke-opacity="0.06" stroke-width="3"/>
+    <circle cx="470" cy="548" r="306" stroke-opacity="0.05" stroke-width="2"/>
+    <circle cx="470" cy="548" r="278" stroke-opacity="0.07" stroke-width="3"/>
+    <circle cx="470" cy="548" r="250" stroke-opacity="0.05" stroke-width="2"/>
+    <circle cx="470" cy="548" r="222" stroke-opacity="0.07" stroke-width="3"/>
+    <circle cx="470" cy="548" r="196" stroke-opacity="0.05" stroke-width="2"/>
+    <circle cx="470" cy="548" r="356" fill="url(#sheen)" stroke="none" transform="rotate(-8 470 548)"/>
+  </g>
+  <circle cx="470" cy="548" r="354" fill="none" stroke="#2c2c38" stroke-width="4"/>
+
+  <!-- the label -->
+  <circle cx="470" cy="548" r="128" fill="url(#label)"/>
+  <circle cx="470" cy="548" r="128" fill="none" stroke="#000" stroke-opacity="0.35" stroke-width="6"/>
+  <path d="M 395 520 A 82 82 0 0 1 520 478" fill="none" stroke="#fff" stroke-opacity="0.35" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="470" cy="548" r="15" fill="#0b0b10"/>
+  <circle cx="466" cy="544" r="5" fill="#ffffff" fill-opacity="0.35"/>
+
+  <!-- the tonearm -->
+  <g filter="url(#armshadow)">
+    <circle cx="842" cy="214" r="58" fill="#241b3f" stroke="url(#metal)" stroke-width="10"/>
+    <circle cx="842" cy="214" r="22" fill="url(#metal)"/>
+    <path d="M 842 214 L 806 560 Q 800 610 760 640 L 690 692" fill="none" stroke="url(#metal)" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+    <g transform="rotate(37 668 708)">
+      <rect x="626" y="676" width="86" height="58" rx="12" fill="#2b2a3c" stroke="url(#metal)" stroke-width="8"/>
+      <rect x="640" y="724" width="18" height="22" rx="4" fill="#6ee8d9"/>
+    </g>
+  </g>
+</svg>

@@ -101,9 +101,9 @@ struct SettingsView: View {
                           text: $settings.helperAddress)
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
             } header: {
-                Text("Needle web address")
+                Text("Platter web address")
             } footer: {
-                Text("Used for importing Spotify playlists. Leave blank: Needle uses your server address (or port 8795 at home).")
+                Text("Used for importing Spotify playlists. Leave blank: Platter uses your server address (or port 8795 at home).")
             }
 
             Section {
@@ -181,9 +181,12 @@ struct OnboardingView: View {
                 Theme.background.ignoresSafeArea()
                 VStack(alignment: .leading, spacing: 18) {
                     Spacer()
-                    Image(systemName: "waveform")
-                        .font(.system(size: 54, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
+                    HStack(spacing: 14) {
+                        Image("Logo").resizable().frame(width: 64, height: 64)
+                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                            .shadow(color: .black.opacity(0.4), radius: 12, y: 8)
+                        Text("Platter").font(Theme.title(26))
+                    }
                     Text("All your music.\nYour sound.")
                         .font(Theme.title(38))
                         .fixedSize(horizontal: false, vertical: true)

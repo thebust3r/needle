@@ -34,7 +34,7 @@ const sessionSalt = Math.random().toString(36).slice(2, 10);
 
 function auth(fixed) {
   const salt = fixed ? sessionSalt : Math.random().toString(36).slice(2, 10);
-  return `u=${encodeURIComponent(cfg.user)}&t=${md5(cfg.pass + salt)}&s=${salt}&v=1.16.1&c=NeedleWeb&f=json`;
+  return `u=${encodeURIComponent(cfg.user)}&t=${md5(cfg.pass + salt)}&s=${salt}&v=1.16.1&c=PlatterWeb&f=json`;
 }
 function rest(ep, params = {}, fixed = false) {
   const q = Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
@@ -1206,8 +1206,8 @@ const screens = {
       <div class="form" style="margin-top:26px">
         <label style="display:flex;align-items:center;justify-content:space-between" id="s-eq"><span style="font-size:17px;color:#fff">Equalizer</span><span>${eq.enabled ? esc(eq.preset) : "Off"} ›</span></label>
       </div>
-      <p class="note">Add Needle to your Home Screen (Share › Add to Home Screen) so it opens full screen like an app.</p>
-      <p class="note">Needle web ${esc(loadedVersion || "")}. To update, drop a new zip into the updates folder on your NAS.</p>`;
+      <p class="note">Add Platter to your Home Screen (Share › Add to Home Screen) so it opens full screen like an app.</p>
+      <p class="note">Platter web ${esc(loadedVersion || "")}. To update, drop a new zip into the updates folder on your NAS.</p>`;
     $("#s-quality").value = quality;
     $("#s-quality").onchange = (e) => { quality = e.target.value; store.set("quality", quality); };
     $("#s-eq").onclick = openEQ;
@@ -1224,7 +1224,7 @@ const screens = {
   async welcome() {
     $("#dock").hidden = true;
     view.innerHTML = `<div class="welcome">
-      <span class="mark">${icon("wave")}</span>
+      <span class="mark"><img src="icons/icon-192.png" alt=""><b>Platter</b></span>
       <h1>All your music.<br>Your sound.</h1>
       <p>Sign in with your Navidrome account to stream everything on your NAS through a real 10-band equalizer.</p>
       <div class="form">
@@ -1315,7 +1315,7 @@ function openScrew() {
         `<button data-chops="${k}" class="${screw.chops === k ? "on" : ""}"><b>${k[0].toUpperCase() + k.slice(1)}</b><span>${d}</span></button>`).join("")}</div>
       ${screw.chops === "live" ? `<p class="sp-live">The cover turns into a record: drag around it to scratch, hold it to stop, spin it hard to skip. Pads show up under the song: tap one and it cuts back right away, in time. Hold <b>Repeat</b> to loop a beat.${matchMedia("(pointer: fine)").matches ? " Keys 1–5 work too." : ""}</p>` : ""}
       ${screw.chops !== "off" ? `<p class="sp-status" id="sp-status"></p>` : ""}
-      <p class="sp-note">Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Needle has found the rhythm.</p>
+      <p class="sp-note">Chops follow the song's beat: repeats, run-backs, stutters and back-it-ups. They start a few seconds into each song, once Platter has found the rhythm.</p>
       <button class="sp-done">Done</button></div>`;
   };
   let timer = 0;
@@ -1433,7 +1433,7 @@ async function checkForUpdate() {
     if (v === loadedVersion) return;
     if (!player.current) { location.reload(); return; }    // nothing loaded: just switch
     const t = $("#toast");
-    t.textContent = `Needle ${v} is installed. Tap here to refresh.`;
+    t.textContent = `Platter ${v} is installed. Tap here to refresh.`;
     t.hidden = false;
     clearTimeout(toast.timer);
     t.onclick = () => location.reload();

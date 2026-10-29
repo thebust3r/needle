@@ -16,7 +16,7 @@ struct ImportView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Paste a Spotify playlist or album link. Needle finds the songs you already have and makes a playlist in the same order, then can download the rest.")
+                Text("Paste a Spotify playlist or album link. Platter finds the songs you already have and makes a playlist in the same order, then can download the rest.")
                     .font(.subheadline).foregroundStyle(Theme.secondary)
 
                 VStack(alignment: .leading, spacing: 0) {
@@ -207,7 +207,7 @@ struct ImportJobView: View {
         let n = missing.count
         return VStack(alignment: .leading, spacing: 6) {
             Text(n == 1 ? "1 song isn't in your library" : "\(n) songs aren't in your library").font(.headline)
-            Text("Download \(n == 1 ? "it" : "them") and Needle adds \(n == 1 ? "it" : "them") to this playlist in the right spot\(n == 1 ? "" : "s").")
+            Text("Download \(n == 1 ? "it" : "them") and Platter adds \(n == 1 ? "it" : "them") to this playlist in the right spot\(n == 1 ? "" : "s").")
                 .font(.subheadline).foregroundStyle(Theme.secondary)
             HStack(spacing: 10) {
                 choice("Just the Songs", "Soulseek", primary: true, enabled: status?.soulseek ?? true) {

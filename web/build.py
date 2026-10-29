@@ -90,7 +90,7 @@ open(OUT, "w").write(compose)
 
 dist = os.path.join(HERE, "dist")
 os.makedirs(dist, exist_ok=True)
-zpath = os.path.join(dist, f"Needle-web-v{version}.zip")
+zpath = os.path.join(dist, f"Platter-web-v{version}.zip")
 with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
     for root, _, files in os.walk(os.path.join(HERE, "site")):
         if "__pycache__" in root: continue
