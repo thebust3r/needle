@@ -288,7 +288,7 @@ const audio = {
   trigger(move, hold) { if (this.chop) this.chop.port.postMessage({ trigger: move, hold: !!hold }); },
   release() { if (this.chop) this.chop.port.postMessage({ release: true }); },
   /** The turntable: "down" (hand on the record), "move" (turned by `offset` seconds since), "up" (let go). */
-  scratch(what, offset) { if (this.chop) this.chop.port.postMessage({ scratch: what, offset }); },
+  scratch(what, offset, speed) { if (this.chop) this.chop.port.postMessage({ scratch: what, offset, speed }); },
   connect(el) {
     this.ensure();
     if (!this.ctx) return false;

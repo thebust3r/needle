@@ -19,6 +19,8 @@ struct TurntableView: View {
     @State private var turned: Double = 0
     @State private var sent: Double = 0
     @State private var recent: [(t: Date, turned: Double)] = []
+    @State private var lastMove = Date.distantPast
+    @State private var sentSpeed = 0.0
     @State private var grabs = 0
 
     var body: some View {
@@ -83,7 +85,7 @@ struct TurntableView: View {
         let a = angleAt(p)
         if !touching {
             touching = true; coasting = false
-            prevAngle = a; turned = 0; sent = 0; recent = [(Date(), 0)]
+            prevAngle = a; turned = 0; sent = 0; sentSpeed = 0; lastMove = .distantPast; recent = [(Date(), 0)]
             grabs += 1
             player.scratchDown()
             return
@@ -93,11 +95,27 @@ struct TurntableView: View {
         let now = Date()
         recent.append((now, turned))
         while recent.count > 2, now.timeIntervalSince(recent[0].t) > 0.09 { recent.removeFirst() }
+        lastMove = now
         sendIfChanged()
     }
 
+    /// How fast the record is turning right now, in playing speeds (1 = normal, 0 = still, negative = backwards).
+    private var handSpeed: Double {
+        let perSpeed = 360 / Self.secondsPerTurn               // degrees per second at normal speed
+        if coasting { return coastSpeed / perSpeed }
+        let now = Date()
+        if now.timeIntervalSince(lastMove) > 0.045 { return 0 }  // finger resting on the record: it's stopped
+        let r = recent.filter { now.timeIntervalSince($0.t) <= 0.05 }
+        guard let a = r.first, let b = r.last, b.t > a.t else { return sentSpeed }
+        return (b.turned - a.turned) / b.t.timeIntervalSince(a.t) / perSpeed
+    }
+
     private func sendIfChanged() {
-        if turned != sent { sent = turned; player.scratchMove(turned / 360 * Self.secondsPerTurn) }
+        let sp = handSpeed
+        if turned != sent || abs(sp - sentSpeed) > 0.01 {
+            sent = turned; sentSpeed = sp
+            player.scratchMove(turned / 360 * Self.secondsPerTurn, speed: sp)
+        }
     }
 
     private func letGo() {
@@ -117,6 +135,7 @@ struct TurntableView: View {
             try? await Task.sleep(for: .milliseconds(16))
             let now = Date(), dt = min(0.05, now.timeIntervalSince(last))
             last = now
+            if touching { sendIfChanged() }                      // keeps the speed current (0 when your finger rests)
             if coasting {
                 coastSpeed *= exp(-dt / 0.7)
                 let d = coastSpeed * dt

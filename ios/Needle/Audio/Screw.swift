@@ -150,19 +150,20 @@ final class ScrewSettings: @unchecked Sendable {
     }
 
     // the turntable: hand on/off the record and how far it's been turned (heard seconds), plus the answer
-    private var _scratchDown = false, _scratchUp = false, _scratchOffset: Double?
+    private var _scratchDown = false, _scratchUp = false, _scratchOffset: Double?, _scratchSpeed: Double?
     private var _scratchResult: (seq: Int, seconds: Double) = (0, 0)
-    func scratch(down: Bool = false, offset: Double? = nil, up: Bool = false) {
+    func scratch(down: Bool = false, offset: Double? = nil, speed: Double? = nil, up: Bool = false) {
         os_unfair_lock_lock(&lock)
-        if down { _scratchDown = true; _scratchUp = false; _scratchOffset = nil }
+        if down { _scratchDown = true; _scratchUp = false; _scratchOffset = nil; _scratchSpeed = nil }
         if let offset { _scratchOffset = offset }
+        if let speed { _scratchSpeed = speed }
         if up { _scratchUp = true }
         os_unfair_lock_unlock(&lock)
     }
-    func takeScratch() -> (down: Bool, offset: Double?, up: Bool) {
+    func takeScratch() -> (down: Bool, offset: Double?, speed: Double?, up: Bool) {
         os_unfair_lock_lock(&lock); defer { os_unfair_lock_unlock(&lock) }
-        let r = (_scratchDown, _scratchOffset, _scratchUp)
-        _scratchDown = false; _scratchOffset = nil; _scratchUp = false
+        let r = (_scratchDown, _scratchOffset, _scratchSpeed, _scratchUp)
+        _scratchDown = false; _scratchOffset = nil; _scratchSpeed = nil; _scratchUp = false
         return r
     }
     /// How far past the ends of the memory the record was spun (song seconds), for skipping through the song.
@@ -540,7 +541,10 @@ final class Chopper {
     private(set) var count = 0
 
     /// The turntable: your hand on the record. See scratchDown().
-    struct Scratch { var hold = true; var pos: Double; var grab: Double; var target: Double; var vel = 1.0; var g = 1.0 }
+    struct Scratch {
+        var hold = true; var pos: Double; var grab: Double; var target: Double
+        var hand = 0.0, vel = 1.0, g = 1.0, slope = 0.0, since = 0, lastSpeed: Double?
+    }
     private(set) var scr: Scratch?
 
     var lag: Int { wp - rp }
@@ -647,18 +651,38 @@ final class Chopper {
     }
 
     // MARK: the turntable
-    // While you hold the record the playhead follows your hand (smoothed over ~8 ms, like the platter's weight), so
-    // moving it back and forth plays the song backwards and forwards at that speed: scratching. Let go and the motor
-    // brings it back up to speed (~0.3 s) from wherever it is. You can't move past the newest audio or further back
-    // than the memory; going past either is reported so the player can skip through the song. Same as the web.
+    // Like a real record, your hand sets the SPEED: how fast and which way the finger is moving is how fast and which way
+    // the song plays (twice as fast = twice the speed and pitch, backwards = backwards, still = stopped). The platter has
+    // weight, so the speed glides (~12 ms) instead of jumping; between updates (they arrive every ~90 ms here) it keeps
+    // changing the way your finger was, and a gentle pull fixes any drift from where your finger is. Let go and the motor
+    // brings it back up to speed (~0.3 s). You can't play past the newest audio or further back than the memory; going
+    // past either is reported so the player can skip through the song. Same as the web.
 
     func scratchDown() {
-        if var s = scr { s.hold = true; s.grab = s.pos; s.target = s.pos; scr = s; return }
+        if var s = scr {
+            s.hold = true; s.grab = s.pos; s.target = s.pos; s.hand = 0; s.slope = 0; s.since = 0; s.lastSpeed = nil
+            scr = s; return
+        }
         active = nil; holding = false                          // grabbing the record stops any chop
         scr = Scratch(pos: Double(rp), grab: Double(rp), target: Double(rp))
     }
     /// `offset`: how far the record has been turned since you grabbed it, in samples (positive = forward).
-    func scratchMove(_ offset: Double) { if var s = scr, s.hold { s.target = s.grab + offset; scr = s } }
+    /// `speed`: how fast it's turning right now, in playing speeds (1 = normal, 0 = still, -1 = backwards).
+    func scratchMove(_ offset: Double?, speed: Double? = nil) {
+        guard var s = scr, s.hold else { return }
+        if let offset { s.target = s.grab + offset }
+        if let sp = speed, sp.isFinite {
+            let v = max(-8, min(8, sp))
+            // several updates can arrive at once: compare the newest with the newest of the previous batch
+            if s.since > 64 {
+                if let last = s.lastSpeed { s.slope = max(-0.002, min(0.002, (v - last) / Double(s.since))) }
+                s.since = 0
+            }
+            s.lastSpeed = v
+            s.hand = v
+        }
+        scr = s
+    }
     /// Let go. Returns how far past the ends you tried to go, in samples.
     func scratchUp() -> Double {
         guard var s = scr, s.hold else { return 0 }
@@ -671,20 +695,36 @@ final class Chopper {
     private func scratchOut(_ channels: [(UnsafeMutablePointer<Float>, Int)], frames: Int) {
         guard var s = scr else { return }
         let sr = sampleRate
-        let follow = 1 - exp(-1 / (0.008 * sr)), motor = 1 - exp(-1 / (0.06 * sr)), loud = 1 - exp(-1 / (0.004 * sr))
+        let glide = 1 - exp(-1 / (0.012 * sr)), motor = 1 - exp(-1 / (0.06 * sr)), loud = 1 - exp(-1 / (0.01 * sr))
+        let pull = 1 / (0.3 * sr), dead = 0.02 * sr, soft = 0.03 * sr, maxAhead = Int(0.12 * sr)
         let lo = scratchLow, hi = Double(wp - 2)
         var done = -1
         for i in 0..<frames {
-            let before = s.pos
-            if s.hold { s.pos += (max(lo, min(hi, s.target)) - s.pos) * follow } else { s.vel += (1 - s.vel) * motor; s.pos += s.vel }
-            s.pos = max(lo, min(hi, s.pos))
-            if s.hold { s.vel = s.pos - before }
+            if s.hold {
+                s.since += 1
+                if s.since < maxAhead { s.hand = max(-8, min(8, s.hand + s.slope)) }
+                var gap = max(lo, min(hi, s.target)) - s.pos
+                gap = (gap < 0 ? -1 : 1) * max(0, abs(gap) - dead)       // close enough: leave it (still = silent)
+                var want = max(-8, min(8, s.hand + gap * pull))
+                want = min(want, (hi - s.pos) / soft); want = max(want, (lo - s.pos) / soft)   // soft ends
+                s.vel += (want - s.vel) * glide
+            } else {
+                s.vel += (1 - s.vel) * motor
+            }
+            s.pos += s.vel
+            if s.pos > hi { s.pos = hi; s.vel = min(s.vel, 0) }
+            if s.pos < lo { s.pos = lo; s.vel = max(s.vel, 0) }
             // like a real stylus: the sound is as strong as the record is moving (silent when you hold it still)
             s.g += (min(1, abs(s.vel)) - s.g) * loud
-            let k = Int(s.pos.rounded(.down)), fr = Float(s.pos - Double(k)), a = k % cap, b = (k + 1) % cap
+            // smooth (cubic) reading between samples
+            let k = Int(s.pos.rounded(.down)), t = Float(s.pos - Double(k))
+            let i0 = ((k - 1) % cap + cap) % cap, i1 = k % cap, i2 = (k + 1) % cap, i3 = (k + 2) % cap
             for (c, (p, stride)) in channels.enumerated() {
-                let r0 = rings[c][a], r1 = rings[c][b]
-                p[i * stride] = (r0 + (r1 - r0) * fr) * Float(s.g)
+                let r = rings[c]
+                let y0 = r[i0], y1 = r[i1], y2 = r[i2], y3 = r[i3]
+                let a = 2 * y0 - 5 * y1 + 4 * y2 - y3, b = 3 * (y1 - y2) + y3 - y0
+                let v = y1 + 0.5 * t * (y2 - y0 + t * (a + t * b))
+                p[i * stride] = v * Float(s.g)
             }
             oc += 1
             if !s.hold, abs(s.vel - 1) < 0.004, s.g > 0.99 { done = i; break }      // back up to speed

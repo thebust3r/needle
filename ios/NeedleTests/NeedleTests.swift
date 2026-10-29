@@ -1179,7 +1179,8 @@ final class ScrewTests: XCTestCase {
         events.append((12.001, { c in grab = c.scr?.pos ?? 0 }))
         for k in 1...60 {
             events.append((12 + Double(k) / 60, { c in
-                c.scratchMove(0.25 * self.sr * sin(2 * .pi * 2 * Double(k) / 60))
+                let ph = 2 * Double.pi * 2 * Double(k) / 60
+                c.scratchMove(-0.25 * self.sr * sin(ph), speed: -0.25 * 2 * .pi * 2 * cos(ph))
                 if let p = c.scr?.pos { lowest = min(lowest, p); highest = max(highest, p) }
             }))
         }
@@ -1193,7 +1194,7 @@ final class ScrewTests: XCTestCase {
         XCTAssertEqual(over, 0, "a small scratch isn't a skip")
 
         // let go: back to the song within 0.4 s, from that spot (you're behind by the time you held it)
-        let (c, out) = runScratch(x, [(15, { $0.scratchDown() }), (15.5, { $0.scratchMove(-0.5 * self.sr) }), (16, { _ = $0.scratchUp() })])
+        let (c, out) = runScratch(x, [(15, { $0.scratchDown() }), (15.5, { $0.scratchMove(-0.5 * self.sr, speed: 0) }), (16, { _ = $0.scratchUp() })])
         let lag = c.lag, t0 = Int(16.4 * sr)
         var same = true
         var t = 0
@@ -1201,6 +1202,48 @@ final class ScrewTests: XCTestCase {
         metric("screw.scratch behind=\(String(format: "%.2f", Double(lag) / sr))s")
         XCTAssertTrue(same, "back to playing the song normally within 0.4 s")
         XCTAssertEqual(Double(lag) / sr, 1.5, accuracy: 0.25, "behind by the time pulled back and held")
+    }
+
+    /// Feels like a real record: the speed follows your finger's speed and glides, even though the audio only hears
+    /// about the finger every ~90 ms (4096-sample blocks) here.
+    func testTurntableFollowsYourFingerSmoothly() {
+        let x = beat(bpm: 84, seconds: 20, offset: 0.21)
+        let c = Chopper(sampleRate: sr, seed: 5)
+        c.prepare(channels: 1)
+        let t0 = 12.0, dur = 2.0, f = 1.5, amp = 0.3
+        func finger(_ t: Double) -> Double { -amp * sr * sin(2 * .pi * f * t) }
+        func fingerSpeed(_ t: Double) -> Double { -amp * 2 * .pi * f * cos(2 * .pi * f * t) }
+        var out = x, next = t0, down = false, up = false, start = 0
+        var speeds: [Double] = []
+        var i = 0
+        while i < x.count {
+            let now = Double(i) / sr, n = min(4096, x.count - i)
+            if !down, now >= t0 { c.scratchDown(); down = true; start = i }
+            if down, !up {
+                while next <= now, next < t0 + dur { c.scratchMove(finger(next - t0), speed: fingerSpeed(next - t0)); next += 1.0 / 60 }
+                if now >= t0 + dur { _ = c.scratchUp(); up = true }
+            }
+            out.withUnsafeMutableBufferPointer { p in c.process([(p.baseAddress! + i, 1)], frames: n, amount: .live) }
+            if down, !up, let s = c.scr { speeds.append(s.vel) }   // the record's speed at the end of each block
+            i += n
+        }
+        // compare at the delay that fits best (the 90 ms blocks add some)
+        var best = (err: Double.infinity, lag: 0.0, stalls: 0, moving: 0)
+        for ms in stride(from: 0.0, through: 150, by: 5) {
+            var err = 0.0, stalls = 0, moving = 0
+            for (k, v) in speeds.enumerated() where k >= 2 {
+                let t = Double(start + (k + 1) * 4096) / sr - t0 - ms / 1000
+                let want = fingerSpeed(t)
+                err += abs(v - want)
+                if abs(want) > 0.6 { moving += 1; if abs(v) < 0.15 { stalls += 1 } }
+            }
+            err /= Double(max(1, speeds.count - 2))
+            if err < best.err { best = (err, ms, stalls, moving) }
+        }
+        metric("screw.scratch_follow error=\(String(format: "%.2f", best.err))x lag=\(Int(best.lag))ms stalls=\(best.stalls)/\(best.moving)")
+        XCTAssertLessThan(best.err, 0.35, "the record's speed follows your finger's speed")
+        XCTAssertLessThanOrEqual(best.lag, 130, "and reacts quickly")
+        XCTAssertLessThanOrEqual(Double(best.stalls), Double(best.moving) * 0.1, "no stop-start while your finger moves")
     }
 
     func testTurntableFlingSkips() {
@@ -1212,9 +1255,9 @@ final class ScrewTests: XCTestCase {
 
     func testTurntableMessagesGoThroughTheSharedSettings() {
         let s = ScrewSettings()
-        s.scratch(down: true); s.scratch(offset: 0.3); s.scratch(offset: 0.5); s.scratch(up: true)
+        s.scratch(down: true); s.scratch(offset: 0.3, speed: 1.2); s.scratch(offset: 0.5, speed: 2); s.scratch(up: true)
         let t = s.takeScratch()
-        XCTAssertTrue(t.down); XCTAssertEqual(t.offset, 0.5); XCTAssertTrue(t.up)
+        XCTAssertTrue(t.down); XCTAssertEqual(t.offset, 0.5); XCTAssertEqual(t.speed, 2); XCTAssertTrue(t.up)
         let again = s.takeScratch()
         XCTAssertFalse(again.down); XCTAssertNil(again.offset); XCTAssertFalse(again.up)
     }

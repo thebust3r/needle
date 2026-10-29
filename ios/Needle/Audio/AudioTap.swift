@@ -110,7 +110,10 @@ final class TapContext {
                 let songPerFrame = songSecondsPerFrame > 0 ? songSecondsPerFrame : 1 / sampleRate
                 let framesPerHeardSecond = Double(screw.speed.rate) / songPerFrame
                 if sc.down { chopper.scratchDown() }
-                if let o = sc.offset { chopper.scratchMove(o * framesPerHeardSecond) }
+                if sc.offset != nil || sc.speed != nil {
+                    // speed is already in "playing speeds": 1 = one frame per frame here, whichever side of the speed change
+                    chopper.scratchMove(sc.offset.map { $0 * framesPerHeardSecond }, speed: sc.speed)
+                }
                 if sc.up {
                     let over = chopper.scratchUp()
                     let prev = screw.scratchResult.seq

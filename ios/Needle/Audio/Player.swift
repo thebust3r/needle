@@ -198,8 +198,9 @@ final class Player {
 
     /// Hand on the record: it stops.
     func scratchDown() { ScrewSettings.shared.scratch(down: true) }
-    /// The record has been turned this far since you grabbed it, in seconds of the song as you hear it.
-    func scratchMove(_ heardSeconds: Double) { ScrewSettings.shared.scratch(offset: heardSeconds) }
+    /// The record has been turned this far since you grabbed it (seconds of the song as you hear it), and is turning at
+    /// `speed` playing speeds right now (1 = normal, 0 = still, negative = backwards).
+    func scratchMove(_ heardSeconds: Double, speed: Double) { ScrewSettings.shared.scratch(offset: heardSeconds, speed: speed) }
     /// Let go: the motor brings it back up to speed. If it was spun past what's in memory, skip through the song.
     func scratchUp() {
         let before = ScrewSettings.shared.scratchResult.seq
