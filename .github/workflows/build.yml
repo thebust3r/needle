@@ -1,13 +1,29 @@
 name: Build iPhone app
 
+# Mac build minutes count 10x against the free allowance, so: only build when the app changed, cancel a build that a
+# newer push replaces, and run the (slower) tests only when a commit message says [test] or when started by hand.
 on:
   push:
     branches: [main]
+    paths: ["ios/**", ".github/workflows/build.yml"]
   workflow_dispatch:
+    inputs:
+      tests:
+        description: "Run the app tests too"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ios-build
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: macos-15
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      RUN_TESTS: ${{ (github.event_name == 'workflow_dispatch' && inputs.tests) || contains(github.event.head_commit.message, '[test]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -19,6 +35,7 @@ jobs:
         run: xcodegen generate
 
       - name: Test in an iPhone simulator
+        if: env.RUN_TESTS == 'true'
         shell: bash
         run: |
           set +e
@@ -72,19 +89,6 @@ jobs:
           codesign --force --deep --sign - Payload/Needle.app
           codesign --verify --verbose Payload/Needle.app
           zip -qry Needle.ipa Payload
-
-      - name: Inspect app package
-        shell: bash
-        run: |
-          {
-            echo "FILES:"; (cd Payload && find . -type f | sort | head -60)
-            echo "BINARIES:"; find Payload -type f -perm +111 -exec file {} \;
-            echo "SIGNATURE:"; codesign -dvvv Payload/Needle.app 2>&1 | head -25
-            echo "ENTITLEMENTS:"; codesign -d --entitlements - Payload/Needle.app 2>&1 | head -20
-            echo "PLIST:"; plutil -p Payload/Needle.app/Info.plist | head -60
-          } > inspect.txt
-          split -l 25 inspect.txt part_
-          for f in part_*; do msg=$(sed 's/%/%25/g' "$f" | awk '{printf "%s%%0A", $0}'); echo "::notice title=Inspect $f::$msg"; done
 
       - uses: actions/upload-artifact@v4
         with:

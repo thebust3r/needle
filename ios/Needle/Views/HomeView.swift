@@ -30,6 +30,7 @@ struct HomeView: View {
                     quickPicks
                     madeForYou
                     shelf("New in Your Library", freshAlbums)
+                    WrappedBanner()
                 } else {
                     connectCard
                 }

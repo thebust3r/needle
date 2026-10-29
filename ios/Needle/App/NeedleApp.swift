@@ -44,6 +44,7 @@ final class AppModel {
         player.quality = { settings.quality }
         player.localFile = { track in local.fileURL(for: track) ?? downloads.fileURL(for: track.id) }
         downloads.client = { SubsonicClient(config: settings.config) }
+        PlayHistory.shared.helper = { settings.config.isComplete ? HelperClient(config: settings.config, address: settings.helperAddress) : nil }
         refreshArtworkClient()
     }
 

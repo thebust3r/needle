@@ -22,6 +22,8 @@ struct TurntableView: View {
     @State private var lastMove = Date.distantPast
     @State private var sentSpeed = 0.0
     @State private var grabs = 0
+    @State private var stopped = false
+    @State private var deck = 1.0           // how fast the record turns on screen (winds down on a tape stop)
 
     var body: some View {
         ZStack {
@@ -48,6 +50,32 @@ struct TurntableView: View {
         .accessibilityElement()
         .accessibilityLabel("Record. Drag around it to scratch, hold it to stop it, spin it hard to skip.")
         .accessibilityIdentifier("turntable")
+        // the Start/Stop button sits on top, outside the record's own touch handling
+        .overlay(alignment: .bottomLeading) { deckButton }
+    }
+
+    /// The deck's Start/Stop button: tape stop (brakes the record to a halt, pitch dropping) or start.
+    private var deckButton: some View {
+        Button {
+            stopped.toggle()
+            player.tapeStop(stopped)
+        } label: {
+            Text(stopped ? "START" : "STOP")
+                .font(.system(size: 12, weight: .heavy).width(.expanded)).tracking(1)
+                .frame(minWidth: 64, minHeight: 34)
+                .padding(.horizontal, 10)
+                .foregroundStyle(stopped ? Color.black : Color(white: 0.92))
+                .background(
+                    LinearGradient(colors: stopped ? [Color(red: 1, green: 0.54, blue: 0.54), Color(red: 0.88, green: 0.33, blue: 0.33)]
+                                                   : [Color(white: 0.23), Color(white: 0.14)], startPoint: .top, endPoint: .bottom),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(.white.opacity(0.12)))
+                .shadow(color: .black.opacity(0.45), radius: 7, y: 6)
+        }
+        .buttonStyle(PressScale())
+        .sensoryFeedback(.impact(weight: .medium), trigger: stopped)
+        .accessibilityLabel(stopped ? "Start: spin the record back up" : "Tape stop: brake the record to a halt")
+        .accessibilityIdentifier("deck-button")
     }
 
     private var record: some View {
@@ -87,6 +115,7 @@ struct TurntableView: View {
             touching = true; coasting = false
             prevAngle = a; turned = 0; sent = 0; sentSpeed = 0; lastMove = .distantPast; recent = [(Date(), 0)]
             grabs += 1
+            stopped = false
             player.scratchDown()
             return
         }
@@ -143,7 +172,10 @@ struct TurntableView: View {
                 sendIfChanged()
                 if abs(coastSpeed) < Self.playingSpeed * 1.2 { coasting = false; player.scratchUp() }
             } else if !touching, player.isPlaying, !reduceMotion {
-                angle += Self.playingSpeed * Double(player.screwSpeed.rate) * dt
+                // spinning along with the music (winding down on a tape stop, spinning back up on start, like the sound)
+                if stopped != ScrewSettings.shared.stopped, !touching { stopped = ScrewSettings.shared.stopped }
+                deck = stopped ? max(0, deck - dt / 0.75) : deck + (1 - deck) * (1 - exp(-dt / 0.06))
+                angle += Self.playingSpeed * Double(player.screwSpeed.rate) * deck * dt
             }
             if abs(angle) > 36000 { angle = angle.truncatingRemainder(dividingBy: 360) }
         }

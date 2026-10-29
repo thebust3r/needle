@@ -52,6 +52,7 @@ def tone_wav(seed):
 
 WAVS = {}
 CREATED = []
+HISTORY = []          # stand-in for the helper's shared listening history when no real helper is running
 HELPER = os.environ.get("HELPER_URL")          # forward /helper/ to a running helper (import tests)
 REST_FWD = os.environ.get("REST_FORWARD")       # playlists live in the helper's fake Navidrome
 from urllib.request import Request as _Req, urlopen as _open
@@ -67,7 +68,16 @@ class H(SimpleHTTPRequestHandler):
         except _HE as e: code, data, ct = e.code, e.read(), e.headers.get("Content-Type", "")
         except Exception: code, data, ct = 502, b"<html>Bad Gateway</html>", "text/html"
         self.send_response(code); self.send_header("Content-Type", ct); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+    def json(self, obj, code=200):
+        b = json.dumps(obj).encode()
+        self.send_response(code); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def do_POST(self):
+        if self.path.startswith("/helper/history") and not HELPER:
+            n = int(self.headers.get("Content-Length") or 0)
+            plays = json.loads(self.rfile.read(n) or b"{}").get("plays", [])
+            keys = {(p.get("device"), p.get("at")) for p in HISTORY}
+            HISTORY.extend(p for p in plays if (p.get("device"), p.get("at")) not in keys)
+            return self.json({"ok": True, "changed": len(plays)})
         if self.path.startswith("/helper/"):
             if not HELPER: return self.forward("http://127.0.0.1:1", "POST")
             return self.forward(HELPER, "POST")
@@ -82,6 +92,10 @@ class H(SimpleHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
         u = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if u.path.startswith("/helper/history") and not HELPER:
+            return self.json({"plays": HISTORY})
+        if u.path == "/_history":
+            return self.json(HISTORY)
         if u.path.startswith("/helper/"):
             return self.forward(HELPER or "http://127.0.0.1:1", "GET")
         if u.path == "/_created":

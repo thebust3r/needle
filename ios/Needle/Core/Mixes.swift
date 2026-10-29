@@ -15,6 +15,8 @@ struct PlayRecord: Codable, Hashable {
     var duration: Double
     var at: Date
     var listened: Double?          // seconds actually heard (filled in when the next song starts)
+    var speed: String?             // slowed & screwed speed it was played at ("screwed"...), nil = normal
+    var device: String?            // which app or browser played it (history is shared through the NAS)
 
     var skipped: Bool { (listened ?? duration) < min(30, duration * 0.5) }
 
@@ -34,9 +36,22 @@ final class PlayHistory {
         return dir.appendingPathComponent("history.json")
     }()
 
+    /// This iPhone, in the shared history.
+    static let deviceId: String = {
+        let d = UserDefaults.standard
+        if let id = d.string(forKey: "history.device") { return id }
+        let id = "ios-" + UUID().uuidString.prefix(8).lowercased()
+        d.set(id, forKey: "history.device")
+        return id
+    }()
+    /// How to reach the helper on the NAS (set by the app); nil = don't share.
+    @ObservationIgnored var helper: (() -> HelperClient?)?
+
     init(load: Bool = true) {
         if load, let data = try? Data(contentsOf: file),
-           let r = try? JSONDecoder().decode([PlayRecord].self, from: data) { records = r }
+           let r = try? JSONDecoder().decode([PlayRecord].self, from: data) {
+            records = r.map { var x = $0; if x.device == nil { x.device = Self.deviceId }; return x }
+        }
     }
 
     func started(_ t: Track, now: Date = .now) {
@@ -45,11 +60,39 @@ final class PlayHistory {
         if let last = records.indices.last, records[last].listened == nil, let s = startedAt {
             records[last].listened = min(records[last].duration, now.timeIntervalSince(s))
         }
+        let speed = ScrewSettings.shared.speed
         records.append(PlayRecord(id: t.id, title: t.title, artist: t.artist, album: t.album, albumId: t.albumId,
-                                  coverArt: t.coverArt, duration: t.duration, at: now))
+                                  coverArt: t.coverArt, duration: t.duration, at: now,
+                                  speed: speed == .off ? nil : speed.rawValue, device: Self.deviceId))
         startedAt = now
         if records.count > 5000 { records.removeFirst(records.count - 5000) }
         save()
+        Task { await sync() }
+    }
+
+    /// Sends this iPhone's plays to the helper on the NAS, so the app and the web share one history (for Wrapped).
+    /// The last couple are sent again each time, because how long you listened is filled in when the next song starts.
+    func sync() async {
+        guard let client = helper?() else { return }
+        let since = UserDefaults.standard.double(forKey: "history.synced")
+        let send = records.enumerated().filter { $0.element.at.timeIntervalSince1970 * 1000 > since || $0.offset >= records.count - 3 }
+            .map { $0.element }.suffix(2000)
+        guard !send.isEmpty, let last = records.last else { return }
+        if (try? await client.uploadHistory(send.map { SharedPlay($0) })) != nil {
+            UserDefaults.standard.set(last.at.timeIntervalSince1970 * 1000, forKey: "history.synced")
+        }
+    }
+
+    /// Your whole history: this iPhone's plays plus everything the other devices sent to the NAS.
+    func everything() async -> [PlayRecord] {
+        var shared: [PlayRecord] = []
+        if let client = helper?(), let plays = try? await client.history() { shared = plays.map(\.record) }
+        var seen = Set<String>(), out: [PlayRecord] = []
+        for r in records + shared {
+            let key = "\(r.device ?? Self.deviceId)|\(Int((r.at.timeIntervalSince1970 * 1000).rounded()))"
+            if seen.insert(key).inserted { out.append(r) }
+        }
+        return out.sorted { $0.at < $1.at }
     }
 
     func save() {
@@ -59,6 +102,30 @@ final class PlayHistory {
 
     /// Only for tests and previews.
     func replace(_ r: [PlayRecord]) { records = r }
+}
+
+/// A play as the helper on the NAS stores it (times in milliseconds, like the web player).
+struct SharedPlay: Codable {
+    var id: String
+    var title: String?
+    var artist: String?
+    var album: String?
+    var albumId: String?
+    var coverArt: String?
+    var duration: Double?
+    var at: Double
+    var listened: Double?
+    var speed: String?
+    var device: String?
+
+    init(_ r: PlayRecord) {
+        id = r.id; title = r.title; artist = r.artist; album = r.album; albumId = r.albumId; coverArt = r.coverArt
+        duration = r.duration; at = (r.at.timeIntervalSince1970 * 1000).rounded(); listened = r.listened; speed = r.speed; device = r.device
+    }
+    var record: PlayRecord {
+        PlayRecord(id: id, title: title ?? "", artist: artist ?? "", album: album ?? "", albumId: albumId, coverArt: coverArt,
+                   duration: duration ?? 0, at: Date(timeIntervalSince1970: at / 1000), listened: listened, speed: speed, device: device)
+    }
 }
 
 // MARK: - Mixes

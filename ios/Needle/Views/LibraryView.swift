@@ -17,6 +17,7 @@ extension View {
             .navigationDestination(for: PlaylistRoute.self) { PlaylistView(playlist: $0.playlist) }
             .navigationDestination(for: LocalAlbumRoute.self) { LocalAlbumView(route: $0) }
             .navigationDestination(for: ImportRoute.self) { ImportJobView(id: $0.id) }
+            .navigationDestination(for: WrappedRoute.self) { WrappedView(period: $0.period) }
             .navigationDestination(for: ListRoute.self) { route in
                 switch route {
                 case .albums: AlbumsGridView()
@@ -53,6 +54,17 @@ struct LibraryView: View {
                     row("Import a Spotify Playlist", "square.and.arrow.down.on.square", .importer)
                 }
                 row("On This iPhone", "iphone", .onPhone, count: local.tracks.count)
+                NavigationLink(value: WrappedRoute()) {
+                    HStack(spacing: 16) {
+                        Image(systemName: "sparkles").font(.title3).foregroundStyle(Theme.accent).frame(width: 28)
+                        Text("Your Wrapped").font(.title3.weight(.medium))
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Theme.tertiary)
+                    }
+                    .padding(.horizontal, 20).padding(.vertical, 15)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(RowButtonStyle())
             }
             .padding(.bottom, 24)
         }

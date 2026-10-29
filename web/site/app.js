@@ -233,6 +233,7 @@ const audio = {
     const onChopMessage = (d) => {
       if ("fired" in d) return livePads.fired(d.fired, d.ok);
       if ("scratched" in d) return turntable.scratched(d.scratched);
+      if ("tape" in d) return turntable.tape(d.tape);
       screw.stats = d; this.lag = d.lag || 0; livePads.status();
     };
     if (this.ctx.audioWorklet) {
@@ -288,6 +289,8 @@ const audio = {
   trigger(move, hold) { if (this.chop) this.chop.port.postMessage({ trigger: move, hold: !!hold }); },
   release() { if (this.chop) this.chop.port.postMessage({ release: true }); },
   /** The turntable: "down" (hand on the record), "move" (turned by `offset` seconds since), "up" (let go). */
+  /** Tape stop / start (the deck's Start/Stop button). */
+  tapeStop(stop) { if (this.chop) this.chop.port.postMessage({ tape: stop ? "stop" : "start" }); },
   scratch(what, offset, speed) { if (this.chop) this.chop.port.postMessage({ scratch: what, offset, speed }); },
   connect(el) {
     this.ensure();
@@ -1019,7 +1022,7 @@ const screens = {
 
   async library() {
     view.innerHTML = `<h1 class="title">Library</h1>
-      ${[["albums", "album", "Albums"], ["artists", "mic", "Artists"], ["playlists", "playlist", "Playlists"], ["favorites", "heart", "Favorites"], ["files", "folder", "Play Files from This Phone"], ["import", "import", "Import a Spotify Playlist"]]
+      ${[["albums", "album", "Albums"], ["artists", "mic", "Artists"], ["playlists", "playlist", "Playlists"], ["favorites", "heart", "Favorites"], ["files", "folder", "Play Files from This Phone"], ["import", "import", "Import a Spotify Playlist"], ["wrapped", "spark", "Your Wrapped"]]
         .map(([r, ic, label]) => `<a class="nav-row" href="#/${r}">${icon(ic)}${label}<span class="count">${icon("chev")}</span></a>`).join("")}`;
   },
 
@@ -1281,7 +1284,7 @@ function route() {
   $("#dock").hidden = false;
   const [name, arg] = location.hash.replace(/^#\/?/, "").split("/");
   const screen = screens[name || "home"] && name !== "welcome" ? name || "home" : "home";
-  const tab = { albums: "library", artists: "library", playlists: "library", favorites: "library", files: "library", album: "library", artist: "library", playlist: "library", import: "library", mix: "home" }[screen] || screen;
+  const tab = { wrapped: "library", albums: "library", artists: "library", playlists: "library", favorites: "library", files: "library", album: "library", artist: "library", playlist: "library", import: "library", mix: "home" }[screen] || screen;
   $$("#tabs a").forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
   window.scrollTo(0, 0);
   screens[screen](arg && decodeURIComponent(arg));

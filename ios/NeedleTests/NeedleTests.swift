@@ -1246,6 +1246,39 @@ final class ScrewTests: XCTestCase {
         XCTAssertLessThanOrEqual(Double(best.stalls), Double(best.moving) * 0.1, "no stop-start while your finger moves")
     }
 
+    func testTapeStop() {
+        let x = beat(bpm: 84, seconds: 20, offset: 0.21)
+        let c = Chopper(sampleRate: sr, seed: 5)
+        c.prepare(channels: 1)
+        var out = x, speeds: [Double] = [], stopAt = 0
+        var i = 0
+        while i < x.count {
+            let now = Double(i) / sr, n = min(512, x.count - i)
+            if stopAt == 0, now >= 12 { c.tapeStop(); stopAt = i }
+            if now >= 14, c.stopped, now < 14.1 { c.tapeStart() }
+            out.withUnsafeMutableBufferPointer { p in c.process([(p.baseAddress! + i, 1)], frames: n, amount: .live) }
+            if stopAt > 0, let s = c.scr { speeds.append(s.vel) } else if stopAt > 0 { speeds.append(1) }
+            i += n
+        }
+        func speed(at t: Double) -> Double { speeds[min(speeds.count - 1, Int(t * sr / 512))] }
+        XCTAssertLessThan(speed(at: 0.2), 0.85, "slows down")
+        XCTAssertGreaterThan(speed(at: 0.2), 0.6, "smoothly")
+        XCTAssertEqual(speed(at: 0.9), 0, "comes to a full stop in under a second")
+        XCTAssertEqual(speed(at: 1.9), 0, "and stays stopped")
+        XCTAssertGreaterThan(speed(at: 2.3), 0.8, "Start spins it back up")
+        let lag = c.lag, t0 = Int(14.6 * sr)
+        for t in stride(from: 0, to: Int(0.5 * sr), by: 11) { XCTAssertEqual(out[t0 + t], x[t0 + t - lag], accuracy: 1e-6) }
+        metric("screw.tape_stop behind=\(String(format: "%.2f", Double(lag) / sr))s")
+        XCTAssertEqual(Double(lag) / sr, 1.65, accuracy: 0.2, "the song carries on from where it stopped")
+    }
+
+    @MainActor func testCarSpeedButtonPicksScrewSpeeds() {
+        XCTAssertEqual(Player.carSpeeds.first, .off)
+        XCTAssertEqual(Player.speed(closestTo: 0.8), .screwed)
+        XCTAssertEqual(Player.speed(closestTo: 0.71), .syrup)
+        XCTAssertEqual(Player.speed(closestTo: 1.0), .off)
+    }
+
     func testTurntableFlingSkips() {
         let x = beat(bpm: 84, seconds: 20, offset: 0.21)
         var over = 0.0
@@ -1293,3 +1326,62 @@ final class ScrewTests: XCTestCase {
         XCTAssertFalse(ScrewSettings.shared.isOn)
     }
 }
+
+// MARK: - Wrapped
+
+final class WrappedTests: XCTestCase {
+    let cal = Calendar.current
+    func at(_ m: Int, _ d: Int, _ h: Int, _ min: Int = 0, year: Int = 2026) -> Date {
+        cal.date(from: DateComponents(year: year, month: m, day: d, hour: h, minute: min))!
+    }
+    func rec(_ id: String, _ artist: String, _ album: String, _ date: Date, listened: Double? = 200, speed: String? = nil, device: String? = nil) -> PlayRecord {
+        PlayRecord(id: id, title: "Song \(id)", artist: artist, album: album, albumId: "al-\(album)", coverArt: "c-\(id)", duration: 200,
+                   at: date, listened: listened, speed: speed, device: device)
+    }
+
+    /// Same history as the web test (test_wrapped.js), so both give the same answers.
+    func history() -> [PlayRecord] {
+        var r: [PlayRecord] = [rec("old", "UGK", "Ridin' Dirty", at(6, 1, 20, year: 2025))]
+        for d in 10...16 { r.append(rec("t6a", "Three 6 Mafia", "Mystic Stylez", at(10, d, 23), speed: "screwed", device: "phone")) }
+        for d in 10...12 { r.append(rec("t6b", "Three 6 Mafia", "Mystic Stylez", at(10, d, 23, 10), listened: 180, speed: "screwed", device: "web")) }
+        r.append(PlayRecord(id: "dr1", title: "Song dr1", artist: "Drake", album: "Views", albumId: "al-Views", coverArt: "c-dr1", duration: 220, at: at(10, 20, 14), listened: 220))
+        r.append(PlayRecord(id: "dr1", title: "Song dr1", artist: "Drake", album: "Views", albumId: "al-Views", coverArt: "c-dr1", duration: 220, at: at(10, 21, 14), listened: nil))
+        r.append(rec("ugk2", "UGK", "Ridin' Dirty", at(10, 21, 14, 2), listened: 5))
+        r.append(rec("ugk3", "UGK", "Ridin' Dirty", at(10, 22, 1)))
+        r.append(rec("sep", "Koopsta Knicca", "Da Devil's Playground", at(9, 5, 22)))
+        return r
+    }
+
+    func testMonth() {
+        let w = Wrapped.compute(history(), period: .month, now: at(10, 29, 12))
+        XCTAssertEqual(w.plays, 13, "skips don't count")
+        XCTAssertEqual(w.minutes, Int(((7 * 200 + 3 * 180 + 220 + 120 + 200) / 60.0).rounded()), "a play with no end time lasts until the next one")
+        XCTAssertEqual(w.topSongs.first?.id, "t6a"); XCTAssertEqual(w.topSongs.first?.plays, 7)
+        XCTAssertEqual(w.topArtists.first?.name, "Three 6 Mafia"); XCTAssertEqual(w.topArtists.first?.coverArt, "c-t6a")
+        XCTAssertEqual(w.topAlbum?.name, "Mystic Stylez")
+        XCTAssertEqual(w.persona?.name, "Night Owl")
+        XCTAssertEqual(w.longestStreak, 7)
+        XCTAssertEqual(w.newArtists.count, 2, "UGK you already knew")
+        XCTAssertFalse(w.newArtists.names.contains("UGK"))
+        XCTAssertEqual(w.slowedShare, (7 * 200 + 3 * 180) / Double(7 * 200 + 3 * 180 + 220 + 120 + 200), accuracy: 0.01)
+        XCTAssertEqual(w.favoriteSpeed, "screwed")
+    }
+
+    func testYearAndAllTime() {
+        let now = at(10, 29, 12)
+        XCTAssertEqual(Wrapped.compute(history(), period: .year, now: now).plays, 14)
+        XCTAssertEqual(Wrapped.compute(history(), period: .all, now: now).plays, 15)
+        XCTAssertEqual(Wrapped.compute([], period: .month, now: now).plays, 0)
+    }
+
+    func testSharedPlaysRoundTrip() throws {
+        let r = rec("x", "A", "B", Date(timeIntervalSince1970: 1_790_000_000.123), speed: "syrup", device: "ios-1")
+        let back = try JSONDecoder().decode(SharedPlay.self, from: JSONEncoder().encode(SharedPlay(r))).record
+        XCTAssertEqual(back.id, "x"); XCTAssertEqual(back.speed, "syrup"); XCTAssertEqual(back.device, "ios-1")
+        XCTAssertEqual(back.at.timeIntervalSince1970, r.at.timeIntervalSince1970, accuracy: 0.001)
+        // the web sends times in milliseconds
+        let web = try JSONDecoder().decode(SharedPlay.self, from: Data(#"{"id":"w","at":1790000000123,"device":"web-1"}"#.utf8))
+        XCTAssertEqual(web.record.at.timeIntervalSince1970, 1_790_000_000.123, accuracy: 0.001)
+    }
+}
+

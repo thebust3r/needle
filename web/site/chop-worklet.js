@@ -374,7 +374,7 @@ class Chopper {
     if (!this.scr) {
       this.active = null; this.holding = false;               // grabbing the record stops any chop
       this.scr = { hold: true, pos: this.rp, grab: this.rp, target: this.rp, hand: 0, vel: 1, g: 1, slope: 0, since: 0 };
-    } else { const s = this.scr; Object.assign(s, { hold: true, grab: s.pos, target: s.pos, hand: 0, slope: 0, since: 0, lastSpeed: undefined }); }
+    } else { const s = this.scr; Object.assign(s, { hold: true, brake: false, grab: s.pos, target: s.pos, hand: 0, slope: 0, since: 0, lastSpeed: undefined }); }
   }
   /** `offset`: how far the record has been turned since you grabbed it, in samples (positive = forward).
       `speed`: how fast it's turning right now, in playing speeds (1 = normal, 0 = still, -1 = backwards). */
@@ -393,6 +393,19 @@ class Chopper {
     s.lastSpeed = speed;
     s.hand = speed;
   }
+  /** Tape stop: like the Start/Stop button on a deck. The record brakes to a halt (~0.75 s, pitch dropping all the
+      way down) and stays stopped until tapeStart(); then the motor spins it back up and the song carries on from there. */
+  tapeStop() {
+    if (this.scr && this.scr.hold) return false;
+    if (!this.scr) {
+      this.active = null; this.holding = false;
+      this.scr = { hold: false, brake: true, pos: this.rp, grab: this.rp, target: this.rp, hand: 0, vel: 1, g: 1, slope: 0, since: 0 };
+    } else this.scr.brake = true;
+    return true;
+  }
+  tapeStart() { if (this.scr && this.scr.brake) { this.scr.brake = false; return true; } return false; }
+  get stopped() { return !!(this.scr && this.scr.brake); }
+
   /** Let go. Returns how far past the ends you tried to go, in samples (for skipping through the song). */
   scratchUp() {
     const s = this.scr;
@@ -406,8 +419,8 @@ class Chopper {
     const s = this.scr, cap = this.cap, nch = channels.length, sr = this.sampleRate;
     const glide = 1 - Math.exp(-1 / (0.012 * sr)), motor = 1 - Math.exp(-1 / (0.06 * sr)), loud = 1 - Math.exp(-1 / (0.01 * sr));
     const pull = 1 / (0.3 * sr);                            // and slowly fix any drift from your finger (~0.3 s)
-    const dead = 0.02 * sr, soft = 0.03 * sr, maxAhead = 0.12 * sr;
-    const lo = this.scratchLow(), hi = this.wp - 2;
+    const dead = 0.02 * sr, soft = 0.03 * sr, maxAhead = 0.12 * sr, brake = 1 / (0.75 * sr);
+    const lo = this.scratchLow(), hi = this.wp - 3;          // (the smooth reading looks 2 samples ahead)
     for (let i = 0; i < frames; i++) {
       if (s.hold) {
         s.since++;
@@ -418,11 +431,16 @@ class Chopper {
         // soft ends: ease to a stop before the newest audio / the start of the memory instead of slamming into them
         want = Math.min(want, (hi - s.pos) / soft); want = Math.max(want, (lo - s.pos) / soft);
         s.vel += (want - s.vel) * glide;
+      } else if (s.brake) {
+        s.vel = Math.max(0, s.vel - brake);                   // tape stop: winding down
+        if (this.wp - s.pos > this.cap - 3 * sr) s.brake = false;   // stopped so long the memory's full: start again
       } else s.vel += (1 - s.vel) * motor;
       s.pos += s.vel;
       if (this.trace) this.trace.push(s.vel);                  // tests: the record's speed, sample by sample
-      if (s.pos > hi) { s.pos = hi; s.vel = Math.min(s.vel, 0); }
-      if (s.pos < lo) { s.pos = lo; s.vel = Math.max(s.vel, 0); }
+      // at the newest audio you can't go further; with your hand on it that stops the record, while the motor or a
+      // tape stop just keep turning at the edge (they're at most a few samples ahead of what's come in)
+      if (s.pos > hi) { s.pos = hi; if (s.hold) s.vel = Math.min(s.vel, 0); }
+      if (s.pos < lo) { s.pos = lo; if (s.hold) s.vel = Math.max(s.vel, 0); }
       // like a real stylus: the sound is as strong as the record is moving (silent when you hold it still)
       s.g += (Math.min(1, Math.abs(s.vel)) - s.g) * loud;
       // smooth (cubic) reading between samples, so slow and fast scratches sound clean
@@ -434,7 +452,7 @@ class Chopper {
         channels[c][i] = v * s.g;
       }
       this.oc++;
-      if (!s.hold && Math.abs(s.vel - 1) < 0.004 && s.g > 0.99) {           // back up to speed: play on normally from here
+      if (!s.hold && !s.brake && Math.abs(s.vel - 1) < 0.004 && s.g > 0.99) {           // back up to speed: play on normally from here
         this.rp = Math.round(s.pos) + 1; this.scr = null; this.changed = true;
         for (let j = i + 1; j < frames; j++) {
           for (let c = 0; c < nch; c++) channels[c][j] = this.rings[c][this.rp % cap];
@@ -569,5 +587,7 @@ function handleChopMessage(c, d, reply, setAmount) {
   if (d.scratch === "down") c.scratchDown();
   if (d.scratch === "move") c.scratchMove(d.offset * c.sampleRate, d.speed);
   if (d.scratch === "up") reply({ scratched: c.scratchUp() / c.sampleRate });
+  if (d.tape === "stop") { c.tapeStop(); reply({ tape: c.stopped }); }
+  if (d.tape === "start") { c.tapeStart(); reply({ tape: c.stopped }); }
 }
 if (typeof module !== "undefined") module.exports = { BeatTracker, Chopper, chopStats, handleChopMessage };

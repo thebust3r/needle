@@ -117,5 +117,30 @@ for (const [label, block, every] of [["web", 128, 1 / 60], ["iPhone", 4096, 1 / 
   check(`${label}: speed glides (no sudden jumps)`, jerk < 0.01, `biggest change ${jerk.toFixed(4)} per sample`);
 }
 
+// 7. tape stop: brakes to a halt (pitch dropping), stays stopped, Start spins it back up and the song carries on from there
+{
+  let speeds = [];
+  const c = new Chopper(sr, 5), out = new Float32Array(x.length);
+  let stopped = false, started = false;
+  for (let i = 0; i < x.length; i += 128) {
+    const now = i / sr;
+    if (!stopped && now >= 12) { stopped = true; c.tapeStop(); c.trace = []; }
+    if (!started && now >= 14) { started = true; c.tapeStart(); }
+    const a = Float32Array.from(x.subarray(i, i + 128));
+    c.process([a], a.length, "live");
+    out.set(a, i);
+  }
+  const tr = c.trace || [];
+  const at = (sec) => tr[Math.floor(sec * sr)];
+  check("tape stop slows down smoothly", at(0.2) < 0.85 && at(0.2) > 0.6 && at(0.5) < at(0.2) && at(0.5) > 0, `${at(0.2).toFixed(2)}x, then ${at(0.5).toFixed(2)}x`);
+  check("and comes to a full stop in under a second", at(0.8) === 0 && at(1.9) === 0);
+  check("stopped = silent", rms(out, Math.floor(12.9 * sr), Math.floor(13.9 * sr)) < 0.001);
+  check("Start spins it back up", at(2.15) > 0.8);
+  const t0 = Math.floor(14.6 * sr), lag = c.lag;
+  let same = true;
+  for (let t = 0; t < 0.5 * sr; t += 11) if (Math.abs(out[t0 + t] - x[t0 + t - lag]) > 1e-6) { same = false; break; }
+  check("then the song carries on from where it stopped", same && lag / sr > 1.4 && lag / sr < 1.8, `${(lag / sr).toFixed(2)} s behind`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exitCode = 1;

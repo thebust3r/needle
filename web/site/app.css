@@ -571,3 +571,53 @@ body.viz-full #np { visibility: hidden; }
 .card.small { width: 128px; }
 .card.small .art { width: 128px; height: 128px; }
 .section-head .more { font-size: 13px; color: var(--accent); font-weight: 600; }
+
+/* the deck's Start/Stop button (tape stop) */
+.deck-btn { position: absolute; left: 0; bottom: 2%; z-index: 2; min-width: 64px; height: 34px; padding: 0 12px; border-radius: 8px;
+  font: 800 12px/1 var(--wide); letter-spacing: 1px; color: #e8eaf0; background: linear-gradient(#3a3d46, #23252c);
+  border: 1px solid rgba(255,255,255,.12); box-shadow: 0 6px 14px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.12);
+  transition: transform .1s ease, background .2s ease, color .2s ease; touch-action: manipulation; }
+.deck-btn:active { transform: scale(.94); }
+.deck-btn.on { color: #111; background: linear-gradient(#ff8a8a, #e05555); }
+
+/* Wrapped */
+.wrapped-banner { display: flex; align-items: center; gap: 12px; margin: 26px 20px 0; padding: 16px 18px; border-radius: 16px; color: #fff;
+  background: linear-gradient(135deg, #7b4dff, #c03fd8 55%, #ff5d8f); box-shadow: 0 10px 28px rgba(123,77,255,.3); }
+.wrapped-banner span { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.wrapped-banner small { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; opacity: .85; }
+.wrapped-banner b { font: 800 19px/1.2 var(--wide); font-stretch: expanded; }
+.wrapped-banner i { font-style: normal; font-size: 13px; opacity: .9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wrapped-banner:active { transform: scale(.98); }
+.wr-tabs { margin: 0 0 16px; }
+.wr { display: flex; flex-direction: column; gap: 14px; padding: 0 20px 24px; }
+.wr-card { border-radius: 20px; padding: 20px; background: var(--surface); }
+.wr-card h2 { margin: 0 0 12px; font: 800 20px/1.2 var(--wide); font-stretch: expanded; }
+.wr-card small { color: var(--sec); font-size: 13px; font-weight: 600; }
+.wr-hero { color: #fff; background: linear-gradient(140deg, #7b4dff, #c03fd8 55%, #ff5d8f); }
+.wr-hero small { color: rgba(255,255,255,.85); text-transform: uppercase; letter-spacing: .6px; }
+.wr-big { font: 800 72px/1 var(--wide); font-stretch: expanded; margin: 10px 0 6px; letter-spacing: -1px; }
+.wr-big span { font-size: 22px; margin-left: 8px; letter-spacing: 0; }
+.wr-hero p { margin: 0 0 16px; font-size: 15px; line-height: 1.4; opacity: .92; }
+.wr-hero .pill.primary { background: #fff; color: #111; }
+.wr-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+.wr-row img { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; flex: none; }
+.wr-row img.round { border-radius: 50%; }
+.wr-n { width: 18px; text-align: center; color: var(--accent); font-size: 16px; flex: none; }
+.wr-row span { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.wr-row span b { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wr-row span small { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wr-row i { font-style: normal; font-size: 13px; color: var(--sec); flex: none; }
+.wr-album { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; }
+.wr-album img { width: min(240px, 70vw); aspect-ratio: 1; border-radius: 14px; object-fit: cover; box-shadow: 0 16px 36px rgba(0,0,0,.45); margin-bottom: 10px; }
+.wr-album b { font-size: 18px; }
+.wr-persona { background: linear-gradient(160deg, #1d1b3a, #10121b); }
+.wr-name { font: 800 34px/1.1 var(--wide); font-stretch: expanded; margin: 6px 0; background: linear-gradient(90deg, #6ee8d9, #a98bff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.wr-persona p { margin: 0 0 14px; color: var(--sec); line-height: 1.4; }
+.wr-hours { display: flex; align-items: flex-end; gap: 3px; height: 70px; }
+.wr-hours i { flex: 1; border-radius: 3px 3px 0 0; background: linear-gradient(#a98bff, #6ee8d9); min-height: 3px; }
+.wr-hours-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--ter); margin-top: 6px; }
+.wr-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.wr-tile { border-radius: 18px; padding: 16px; background: var(--surface); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wr-tile small { color: var(--sec); font-size: 12px; font-weight: 600; }
+.wr-tile b { font: 800 30px/1.1 var(--wide); font-stretch: expanded; }
+.wr-tile span { font-size: 13px; color: var(--sec); line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }

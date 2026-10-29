@@ -10,6 +10,7 @@ const turntable = (() => {
   let grabA = 0, prevA = 0, turned = 0, sent = 0, sentSpeed = 0, pending = false, lastMove = 0;
   let samples = [];                      // recent [time, turned] for the fling speed
   let vel = 0;                           // coasting speed, degrees per second
+  let stopped = false, deck = 1;         // tape stop: the button's state, and how fast the record turns (0..1)
 
   function init() {
     el = $("#vinyl"); disc = $(".vinyl-disc", el); label = $(".vinyl-label", el); stage = $("#np-stage");
@@ -19,6 +20,9 @@ const turntable = (() => {
     el.addEventListener("pointercancel", up);
     el.addEventListener("contextmenu", (e) => e.preventDefault());
     el.addEventListener("click", (e) => e.stopPropagation());       // the record isn't the visualizer button
+    const btn = $("#deck-btn");
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());   // pressing the button isn't grabbing the record
+    btn.addEventListener("click", (e) => { e.stopPropagation(); toggleDeck(); });
   }
   function show(yes) {
     if (!el) init();
@@ -37,8 +41,25 @@ const turntable = (() => {
   }
   const wrap = (d) => (d > 180 ? d - 360 : d < -180 ? d + 360 : d);
 
+  /** The deck's Start/Stop button: tape stop (brakes to a halt, pitch dropping) or start (spins back up). */
+  function toggleDeck() {
+    audio.ensure();
+    stopped = !stopped;
+    audio.tapeStop(stopped);
+    $("#deck-btn").textContent = stopped ? "START" : "STOP";
+    $("#deck-btn").classList.toggle("on", stopped);
+    $("#deck-btn").setAttribute("aria-label", stopped ? "Start: spin the record back up" : "Tape stop: brake the record to a halt");
+    if (navigator.vibrate) navigator.vibrate(stopped ? [8, 40, 8] : 8);
+  }
+  /** What the audio side says about the tape stop (it can start on its own if it was stopped a very long time). */
+  function tape(isStopped) {
+    if (isStopped !== stopped) { stopped = isStopped; $("#deck-btn").textContent = stopped ? "START" : "STOP"; $("#deck-btn").classList.toggle("on", stopped); }
+  }
+
   function down(e) {
+    if (e.target.closest(".deck-btn")) return;
     e.preventDefault();
+    if (stopped) { stopped = false; $("#deck-btn").textContent = "STOP"; $("#deck-btn").classList.remove("on"); }   // grabbing it takes over
     try { el.setPointerCapture(e.pointerId); } catch {}
     audio.ensure();
     touching = true; coasting = false;
@@ -103,11 +124,13 @@ const turntable = (() => {
       const d = vel * dt; turned += d; angle += d; send();
       if (Math.abs(vel) < RPM_DEG * 1.2) letGo();
     } else if (!touching && player.playing && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      angle += RPM_DEG * screw.rate * dt;                      // spinning along with the music
+      // spinning along with the music (winding down on a tape stop, spinning back up on start, like the sound)
+      deck = stopped ? Math.max(0, deck - dt / 0.75) : deck + (1 - deck) * (1 - Math.exp(-dt / 0.06));
+      angle += RPM_DEG * screw.rate * deck * dt;
     }
     disc.style.transform = `rotate(${angle % 360}deg)`;
     if (Math.random() < 0.02) setLabel();
     raf = requestAnimationFrame(frame);
   }
-  return { show, scratched, get active() { return touching || coasting; } };
+  return { show, scratched, tape, get active() { return touching || coasting; }, get stopped() { return stopped; } };
 })();

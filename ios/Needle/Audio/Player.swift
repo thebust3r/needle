@@ -196,8 +196,11 @@ final class Player {
 
     // MARK: the turntable (Live chops)
 
+    /// The deck's Start/Stop button: tape stop (brakes to a halt) or start (spins back up, carrying on from there).
+    func tapeStop(_ stop: Bool) { ScrewSettings.shared.tape(stop: stop) }
+
     /// Hand on the record: it stops.
-    func scratchDown() { ScrewSettings.shared.scratch(down: true) }
+    func scratchDown() { ScrewSettings.shared.stopped = false; ScrewSettings.shared.scratch(down: true) }
     /// The record has been turned this far since you grabbed it (seconds of the song as you hear it), and is turning at
     /// `speed` playing speeds right now (1 = normal, 0 = still, negative = backwards).
     func scratchMove(_ heardSeconds: Double, speed: Double) { ScrewSettings.shared.scratch(offset: heardSeconds, speed: speed) }
@@ -303,6 +306,7 @@ final class Player {
     func setStarred(_ on: Bool) {
         guard queue.indices.contains(index), !queue[index].isLocal else { return }
         queue[index].starred = on
+        updateNowPlayingTime()
         let id = queue[index].id, c = client()
         Task.detached { try? await c.setStarred(id, on) }
     }
@@ -526,6 +530,30 @@ final class Player {
             self?.seek(to: e.positionTime)
             return .success
         }
+        // CarPlay's Now Playing screen (and other system players) show a speed button: it switches the slowed &
+        // screwed speeds right from the car screen.
+        cc.changePlaybackRateCommand.supportedPlaybackRates = Self.carSpeeds.map { NSNumber(value: $0.rate) }
+        cc.changePlaybackRateCommand.isEnabled = true
+        cc.changePlaybackRateCommand.addTarget { [weak self] e in
+            guard let e = e as? MPChangePlaybackRateCommandEvent, let self else { return .commandFailed }
+            self.setScrew(speed: Self.speed(closestTo: e.playbackRate))
+            return .success
+        }
+        // and a heart: favorite the song that's playing
+        cc.likeCommand.localizedTitle = "Favorite"
+        cc.likeCommand.localizedShortTitle = "Favorite"
+        cc.likeCommand.isEnabled = true
+        cc.likeCommand.addTarget { [weak self] _ in
+            guard let self, let t = self.current, !t.isLocal else { return .noSuchContent }
+            self.setStarred(!t.starred)
+            return .success
+        }
+    }
+
+    /// The speeds offered on the car screen, normal first.
+    static let carSpeeds: [ScrewSpeed] = [.off, .slowed, .screwed, .syrup]
+    static func speed(closestTo rate: Float) -> ScrewSpeed {
+        ScrewSpeed.allCases.min { abs($0.rate - rate) < abs($1.rate - rate) } ?? .off
     }
 
     private func updateNowPlaying(for track: Track) {
@@ -554,5 +582,6 @@ final class Player {
         ]
         if let art = nowPlayingArt { info[MPMediaItemPropertyArtwork] = art }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPRemoteCommandCenter.shared().likeCommand.isActive = t.starred      // the heart shows filled when it's a favorite
     }
 }

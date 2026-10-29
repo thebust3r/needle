@@ -220,6 +220,51 @@ async def main():
         check("no script errors (artist link)", not errs3, errs3[:3])
         await ctx3.close()
 
+        print("\n== Wrapped ==")
+        import datetime
+        now = datetime.datetime.now()
+        hist = []
+        base = datetime.datetime(now.year, now.month, 1, 23, 0)
+        for d in range(min(now.day, 9)):
+            for k, sid in enumerate(["so1", "so1", "so2"]):
+                t = base + datetime.timedelta(days=d, minutes=k * 4)
+                if t > now: continue
+                hist.append({"id": sid, "title": {"so1": "Rain Rain", "so2": "Drive Signal"}[sid], "artist": {"so1": "Velvet Static", "so2": "Paper Moons"}[sid],
+                             "album": "Rain Rain", "albumId": "al1", "coverArt": "al1", "duration": 200, "at": int(t.timestamp() * 1000), "listened": 200,
+                             "speed": "screwed", "device": "phone"})
+        ctx4, pg4, errs4, _ = await page(browser, init="localStorage.setItem('needle.history', " + json.dumps(json.dumps(hist)) + ");")
+        await pg4.goto(BASE + "#/")
+        await pg4.wait_for_selector(".wrapped-banner", timeout=15000)
+        check("Home shows your month so far", "so far" in await pg4.inner_text(".wrapped-banner"), await pg4.inner_text(".wrapped-banner"))
+        await pg4.click(".wrapped-banner")
+        await pg4.wait_for_selector(".wr-hero")
+        hero = await pg4.inner_text(".wr-hero")
+        n = len(hist)
+        import re as _re
+        got = int(_re.search(r"([\d,]+) plays", hero).group(1).replace(",", ""))
+        check("Wrapped: how much you listened (this phone's plays plus the others on the NAS)", got >= n and "different songs" in hero, hero)
+        check("Wrapped: top song", "Rain Rain" in await pg4.inner_text(".wr-card:nth-of-type(2)"))
+        check("Wrapped: listening personality", "Night Owl" in await pg4.inner_text(".wr-persona"))
+        tiles = await pg4.inner_text(".wr-tiles")
+        check("Wrapped: how much was slowed down", "%" in tiles and "Screwed" in tiles, tiles)
+        await pg4.wait_for_timeout(1200)
+        await pg4.evaluate("$('#dock').style.visibility = 'hidden'")
+        await pg4.screenshot(path=os.path.join(SHOTS, "wrapped-1.png"), full_page=True)
+        await pg4.evaluate("$('#dock').style.visibility = ''")
+        await pg4.click("#wr-play")
+        await pg4.wait_for_function("player.queue.length >= 2 && player.current.id === 'so1'", timeout=5000)
+        check("Play your top songs plays them, most played first", True)
+        await pg4.click(".wr-tabs a:nth-child(3)")
+        await pg4.wait_for_function("location.hash === '#/wrapped/all'")
+        await pg4.wait_for_selector(".wr-hero")
+        check("switch to All Time", "all time" in (await pg4.inner_text(".wr-hero")).lower())
+        await pg4.wait_for_timeout(1500)
+        synced = json.loads(urlopen(BASE + "_history").read())
+        check("plays are shared with the NAS (for the app's Wrapped too)", any(p.get("device", "").startswith("web-") for p in synced), len(synced))
+        check("Library links to Wrapped", True)
+        check("no script errors (Wrapped)", not errs4, errs4[:3])
+        await ctx4.close()
+
         await browser.close()
 
 try:

@@ -152,6 +152,19 @@ final class ScrewSettings: @unchecked Sendable {
     // the turntable: hand on/off the record and how far it's been turned (heard seconds), plus the answer
     private var _scratchDown = false, _scratchUp = false, _scratchOffset: Double?, _scratchSpeed: Double?
     private var _scratchResult: (seq: Int, seconds: Double) = (0, 0)
+    private var _tape: Bool?          // true = tape stop, false = start
+    private var _stopped = false
+    /// The deck's Start/Stop button.
+    func tape(stop: Bool) { os_unfair_lock_lock(&lock); _tape = stop; _stopped = stop; os_unfair_lock_unlock(&lock) }
+    func takeTape() -> Bool? {
+        os_unfair_lock_lock(&lock); defer { os_unfair_lock_unlock(&lock) }
+        let r = _tape; _tape = nil; return r
+    }
+    /// Whether the record is tape-stopped (as far as the audio side knows).
+    var stopped: Bool {
+        get { os_unfair_lock_lock(&lock); defer { os_unfair_lock_unlock(&lock) }; return _stopped }
+        set { os_unfair_lock_lock(&lock); _stopped = newValue; os_unfair_lock_unlock(&lock) }
+    }
     func scratch(down: Bool = false, offset: Double? = nil, speed: Double? = nil, up: Bool = false) {
         os_unfair_lock_lock(&lock)
         if down { _scratchDown = true; _scratchUp = false; _scratchOffset = nil; _scratchSpeed = nil }
@@ -542,7 +555,7 @@ final class Chopper {
 
     /// The turntable: your hand on the record. See scratchDown().
     struct Scratch {
-        var hold = true; var pos: Double; var grab: Double; var target: Double
+        var hold = true; var brake = false; var pos: Double; var grab: Double; var target: Double
         var hand = 0.0, vel = 1.0, g = 1.0, slope = 0.0, since = 0, lastSpeed: Double?
     }
     private(set) var scr: Scratch?
@@ -660,7 +673,7 @@ final class Chopper {
 
     func scratchDown() {
         if var s = scr {
-            s.hold = true; s.grab = s.pos; s.target = s.pos; s.hand = 0; s.slope = 0; s.since = 0; s.lastSpeed = nil
+            s.hold = true; s.brake = false; s.grab = s.pos; s.target = s.pos; s.hand = 0; s.slope = 0; s.since = 0; s.lastSpeed = nil
             scr = s; return
         }
         active = nil; holding = false                          // grabbing the record stops any chop
@@ -683,6 +696,26 @@ final class Chopper {
         }
         scr = s
     }
+    /// Tape stop: like the Start/Stop button on a deck. The record brakes to a halt (~0.75 s, pitch dropping all the way
+    /// down) and stays stopped until tapeStart(); then the motor spins it back up and the song carries on from there.
+    @discardableResult
+    func tapeStop() -> Bool {
+        if let s = scr, s.hold { return false }
+        if var s = scr { s.brake = true; scr = s; return true }
+        active = nil; holding = false
+        var s = Scratch(pos: Double(rp), grab: Double(rp), target: Double(rp))
+        s.hold = false; s.brake = true
+        scr = s
+        return true
+    }
+    @discardableResult
+    func tapeStart() -> Bool {
+        guard var s = scr, s.brake else { return false }
+        s.brake = false; scr = s
+        return true
+    }
+    var stopped: Bool { scr?.brake == true }
+
     /// Let go. Returns how far past the ends you tried to go, in samples.
     func scratchUp() -> Double {
         guard var s = scr, s.hold else { return 0 }
@@ -696,8 +729,8 @@ final class Chopper {
         guard var s = scr else { return }
         let sr = sampleRate
         let glide = 1 - exp(-1 / (0.012 * sr)), motor = 1 - exp(-1 / (0.06 * sr)), loud = 1 - exp(-1 / (0.01 * sr))
-        let pull = 1 / (0.3 * sr), dead = 0.02 * sr, soft = 0.03 * sr, maxAhead = Int(0.12 * sr)
-        let lo = scratchLow, hi = Double(wp - 2)
+        let pull = 1 / (0.3 * sr), dead = 0.02 * sr, soft = 0.03 * sr, maxAhead = Int(0.12 * sr), brake = 1 / (0.75 * sr)
+        let lo = scratchLow, hi = Double(wp - 3)          // (the smooth reading looks 2 samples ahead)
         var done = -1
         for i in 0..<frames {
             if s.hold {
@@ -708,12 +741,17 @@ final class Chopper {
                 var want = max(-8, min(8, s.hand + gap * pull))
                 want = min(want, (hi - s.pos) / soft); want = max(want, (lo - s.pos) / soft)   // soft ends
                 s.vel += (want - s.vel) * glide
+            } else if s.brake {
+                s.vel = max(0, s.vel - brake)                                   // tape stop: winding down
+                if Double(wp) - s.pos > Double(cap) - 3 * sr { s.brake = false }   // stopped so long the memory's full
             } else {
                 s.vel += (1 - s.vel) * motor
             }
             s.pos += s.vel
-            if s.pos > hi { s.pos = hi; s.vel = min(s.vel, 0) }
-            if s.pos < lo { s.pos = lo; s.vel = max(s.vel, 0) }
+            // at the newest audio you can't go further: with your hand on it that stops the record, while the motor or a
+            // tape stop just keep turning at the edge
+            if s.pos > hi { s.pos = hi; if s.hold { s.vel = min(s.vel, 0) } }
+            if s.pos < lo { s.pos = lo; if s.hold { s.vel = max(s.vel, 0) } }
             // like a real stylus: the sound is as strong as the record is moving (silent when you hold it still)
             s.g += (min(1, abs(s.vel)) - s.g) * loud
             // smooth (cubic) reading between samples
@@ -727,7 +765,7 @@ final class Chopper {
                 p[i * stride] = v * Float(s.g)
             }
             oc += 1
-            if !s.hold, abs(s.vel - 1) < 0.004, s.g > 0.99 { done = i; break }      // back up to speed
+            if !s.hold, !s.brake, abs(s.vel - 1) < 0.004, s.g > 0.99 { done = i; break }      // back up to speed
         }
         if done >= 0 {
             rp = Int(s.pos.rounded()) + 1

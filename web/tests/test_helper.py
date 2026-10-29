@@ -182,6 +182,25 @@ try:
     code, _ = call(f"/jobs/{jid}", method="DELETE")
     code2, _ = call(f"/jobs/{jid}")
     check("delete removes from list", code == 200 and code2 == 404)
+    print("Listening history (shared by the app and the web)")
+    phone = [{"id": "s1", "title": "A", "artist": "X", "duration": 200, "at": 1000, "device": "phone"},
+             {"id": "s2", "title": "B", "artist": "Y", "duration": 180, "at": 2000, "device": "phone"}]
+    web = [{"id": "s3", "title": "C", "artist": "Z", "duration": 150, "at": 1500, "device": "web", "speed": "screwed"}]
+    code, r = call("/history", {"plays": phone})
+    check("phone uploads its plays", code == 200 and r["changed"] == 2, r)
+    call("/history", {"plays": web})
+    code, r = call("/history")
+    check("everything comes back together, in order", code == 200 and [p["id"] for p in r["plays"]] == ["s1", "s3", "s2"], r)
+    phone[1]["listened"] = 42
+    code, r = call("/history", {"plays": phone})
+    check("sending a play again just updates it (no duplicates)", r["changed"] == 1 and len(call("/history")[1]["plays"]) == 3, r)
+    check("the update stuck", [p for p in call("/history")[1]["plays"] if p["id"] == "s2"][0]["listened"] == 42)
+    code, r = call("/history?since=1500")
+    check("only newer plays when asked", [p["id"] for p in r["plays"]] == ["s2"], r)
+    code, _ = call("/history", a="u=mason&t=bad&s=x")
+    check("history needs your login", code == 401)
+    code, r = call("/history", {"plays": [{"title": "no id"}, "junk", {"id": "x"}]})
+    check("bad entries are ignored", code == 200 and r["changed"] == 0, r)
 finally:
     proc.kill(); fake.kill()
     log = open(os.path.join(tmp, "helper.log")).read()

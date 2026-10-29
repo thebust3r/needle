@@ -127,6 +127,18 @@ async def main():
         t_after = await pg.evaluate("player.time()")
         check("spinning it hard forward skips ahead in the song", t_after - t_before > 3, f"{t_before:.1f} -> {t_after:.1f} s")
 
+        # tape stop: the deck's Start/Stop button
+        lag_before = await pg.evaluate("audio.lag")
+        await pg.click("#deck-btn")
+        await pg.wait_for_timeout(300)
+        check("Stop button: the record winds down", await pg.inner_text("#deck-btn") == "START")
+        await pg.wait_for_timeout(1500)
+        await pg.screenshot(path=os.path.join(SHOTS, "screw-7-tape-stop.png"))
+        await pg.click("#deck-btn")
+        await pg.wait_for_timeout(1500)
+        lag_after = await pg.evaluate("audio.lag")
+        check("Start: it spins back up and the song carries on from where it stopped", await pg.inner_text("#deck-btn") == "STOP" and lag_after - lag_before > 1.0, f"{lag_before:.2f} -> {lag_after:.2f} s behind")
+
         # chops push the rest of the song back: the time shown is what you hear, and the song plays out before the next
         await pg.evaluate("player.seek(20)")
         await pg.wait_for_function("screw.stats && screw.stats.confidence > 0.15 && player.time() > 24", timeout=20000)

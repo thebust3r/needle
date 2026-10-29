@@ -104,7 +104,8 @@ final class TapContext {
             let taps = screw.takeTaps()
             if taps.reset { chopper.reset() }
             let sc = screw.takeScratch()
-            if screw.isOn || chopper.active != nil || chopper.lag > 0 || chopper.scr != nil {
+            if let stop = screw.takeTape() { if stop { chopper.tapeStop() } else { chopper.tapeStart() } }
+            if screw.isOn || chopper.active != nil || chopper.lag > 0 || chopper.scr != nil || chopper.stopped {
                 let lagBefore = chopper.lag
                 // the turntable: heard seconds <-> frames here (the tap may sit before or after the speed change)
                 let songPerFrame = songSecondsPerFrame > 0 ? songSecondsPerFrame : 1 / sampleRate
@@ -121,7 +122,9 @@ final class TapContext {
                 }
                 if let m = taps.move { chopper.trigger(m, hold: taps.hold) }
                 if taps.release { chopper.release() }       // after the tap: a quick tap on Loop is one repeat
+                let wasStopped = chopper.stopped
                 chopper.process(channels, frames: frames, amount: screw.chops)
+                if wasStopped, !chopper.stopped { screw.stopped = false }     // it started again on its own
                 sinceStatus += frames
                 if sinceStatus >= Int(sampleRate) || chopper.lag != lagBefore && chopper.active == nil {   // for the Screw sheet and the player
                     sinceStatus = 0

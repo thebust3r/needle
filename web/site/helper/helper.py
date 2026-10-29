@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.0"
+VERSION = "1.1"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -397,6 +397,54 @@ LOCK = threading.RLock()
 JOBS = {}
 JOBS_FILE = os.path.join(DATA_DIR, "jobs.json")
 ACTIVE = {"searching", "downloading", "importing", "queued", "requesting", "album"}
+
+
+# ------------------------------------------------------------------ listening history (shared by the app and the web)
+# Every play from every device, per Navidrome user, so Wrapped and the mixes see all your listening.
+
+HISTORY_LOCK = threading.Lock()
+HISTORY_MAX = 50000
+HISTORY_FIELDS = ("id", "title", "artist", "album", "albumId", "coverArt", "duration", "at", "listened", "speed", "device")
+
+
+def history_file(user):
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", user)[:60] or "user"
+    return os.path.join(DATA_DIR, f"history-{safe}.json")
+
+
+def load_history(user):
+    try:
+        with open(history_file(user)) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def merge_history(user, plays):
+    """Adds or updates plays (the same play from the same device = same device + start time). Returns how many changed."""
+    with HISTORY_LOCK:
+        have = load_history(user)
+        index = {(r.get("device"), r.get("at")): i for i, r in enumerate(have)}
+        changed = 0
+        for p in plays:
+            if not isinstance(p, dict) or not p.get("id") or not isinstance(p.get("at"), (int, float)):
+                continue
+            rec = {k: p.get(k) for k in HISTORY_FIELDS if p.get(k) is not None}
+            key = (rec.get("device"), rec.get("at"))
+            if key in index:
+                if have[index[key]] != rec:
+                    have[index[key]].update(rec); changed += 1
+            else:
+                index[key] = len(have); have.append(rec); changed += 1
+        if changed:
+            have.sort(key=lambda r: r.get("at", 0))
+            have = have[-HISTORY_MAX:]
+            tmp = history_file(user) + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(have, f, separators=(",", ":"))
+            os.replace(tmp, history_file(user))
+        return changed
 
 
 def save_jobs():
@@ -927,6 +975,16 @@ class Handler(BaseHTTPRequestHandler):
                     JOBS.pop(old["id"], None)
             threading.Thread(target=run_import, args=(jid, src, job["name"]), daemon=True).start()
             return self.send(200, public(job))
+        if path == "/history" and method == "GET":
+            since = float((q.get("since") or ["0"])[0] or 0)
+            plays = [r for r in load_history(creds["u"]) if r.get("at", 0) > since]
+            return self.send(200, {"plays": plays})
+        if path == "/history" and method == "POST":
+            b = self.body()
+            plays = b.get("plays") if isinstance(b, dict) else None
+            if not isinstance(plays, list):
+                return self.send(400, {"error": "Send {plays: [...]}"})
+            return self.send(200, {"ok": True, "changed": merge_history(creds["u"], plays[:2000])})
         m = re.fullmatch(r"/jobs/([0-9a-f]+)(/download|/rematch)?", path)
         if m:
             with LOCK:

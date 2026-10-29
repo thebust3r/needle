@@ -3,8 +3,9 @@
 "use strict";
 
 /* ---------------- listening history (kept in this browser) ---------------- */
+const deviceId = store.get("deviceId", null) || (() => { const id = "web-" + Math.random().toString(36).slice(2, 10); store.set("deviceId", id); return id; })();
 const plays = {
-  list: store.get("history", []),
+  list: store.get("history", []).map((r) => (r.device ? r : { ...r, device: deviceId })),
   startedAt: 0,
   started(t) {
     if (!t || t.local) return;
@@ -12,10 +13,34 @@ const plays = {
     if (last && last.id === t.id && now - last.at < 20000) return;
     if (last && last.listened == null && this.startedAt) last.listened = Math.min(last.duration, (now - this.startedAt) / 1000);
     this.list.push({ id: t.id, title: t.title, artist: t.artist, album: t.album, albumId: t.albumId, coverArt: t.coverArt,
-                     duration: t.duration || 0, at: now });
+                     duration: t.duration || 0, at: now, device: deviceId,
+                     ...(typeof screw !== "undefined" && screw.speed !== "off" ? { speed: screw.speed } : {}) });
     this.startedAt = now;
     if (this.list.length > 3000) this.list.splice(0, this.list.length - 3000);
     store.set("history", this.list);
+    this.sync();
+  },
+  /** Sends your plays to the helper on the NAS, so the app and the web share one history (for Wrapped and the mixes).
+      The last couple are sent again each time, because how long you listened is filled in when the next song starts. */
+  async sync() {
+    const since = store.get("historySynced", 0);
+    const send = this.list.filter((r, i) => r.at > since || i >= this.list.length - 3).slice(-2000);
+    if (!send.length) return;
+    try {
+      const r = await fetch(`helper/history?${auth()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plays: send }) });
+      if (r.ok) store.set("historySynced", this.list[this.list.length - 1].at);
+    } catch { /* the NAS helper isn't reachable right now: next time */ }
+  },
+  /** Your whole history: this device's plays plus everything the other devices sent to the NAS. */
+  async everything() {
+    let shared = [];
+    try {
+      const r = await fetch(`helper/history?${auth()}`);
+      if (r.ok && (r.headers.get("Content-Type") || "").includes("json")) shared = (await r.json()).plays || [];
+    } catch { /* offline: just this device */ }
+    const seen = new Set(), out = [];
+    for (const r of [...this.list, ...shared]) { const k = `${r.device || deviceId}|${r.at}`; if (!seen.has(k)) { seen.add(k); out.push(r); } }
+    return out.sort((a, b) => a.at - b.at);
   },
 };
 const skipped = (r) => (r.listened ?? r.duration) < Math.min(30, r.duration * 0.5);
@@ -391,6 +416,65 @@ screens.home = async function home() {
       <div class="shelf">${fresh.map((a, i) => albumCard(a).replace('class="card"', `class="card small appear" style="--d:${i * 30}ms"`)).join("")}</div></div>` : "")
       || (picks.length ? "" : `<div class="empty"><b>Your library is empty</b>Navidrome hasn't found any music yet.</div>`);
   } catch (e) { if ($("#shelves")) $("#shelves").innerHTML = errorBox(e); }
+  // your month so far, once there's enough to show
+  plays.everything().then((all) => {
+    if (token !== routeToken || !$("#shelves")) return;
+    const w = Wrapped.compute(all, "month");
+    if (w.plays < 10) return;
+    $("#shelves").insertAdjacentHTML("beforeend", `<a class="wrapped-banner appear" href="#/wrapped/month">
+      <span><small>${icon("spark")} Wrapped</small><b>Your ${esc(w.label)} so far</b><i>${hoursText(w.minutes)} · ${w.topArtists[0] ? esc(w.topArtists[0].name) + " on top" : ""}</i></span>
+      ${icon("chev")}</a>`);
+  });
+};
+
+const hoursText = (min) => (min >= 120 ? `${Math.round(min / 60)} hours` : `${min} minutes`);
+
+/* ---------------- Wrapped ---------------- */
+screens.wrapped = async function wrappedScreen(period) {
+  period = ["month", "year", "all"].includes(period) ? period : "month";
+  const token = routeToken;
+  view.innerHTML = backLink() + loading();
+  const all = await plays.everything();
+  if (token !== routeToken) return;
+  const w = Wrapped.compute(all, period);
+  const tabs = [["month", Wrapped.periodRange("month").label], ["year", Wrapped.periodRange("year").label], ["all", "All Time"]];
+  const head = `${backLink()}<h1 class="title">Wrapped</h1>
+    <div class="presets wr-tabs">${tabs.map(([k, v]) => `<a class="chip ${k === period ? "on" : ""}" href="#/wrapped/${k}">${esc(v)}</a>`).join("")}</div>`;
+  if (w.plays < 3) {
+    view.innerHTML = head + `<div class="empty"><b>Not much to show yet</b>Play some music${period === "month" ? " this month" : ""} and your Wrapped fills in here: top songs, artists, your listening personality and more.</div>`;
+    return;
+  }
+  const big = w.minutes >= 120 ? [Math.round(w.minutes / 60).toLocaleString(), "hours"] : [w.minutes.toLocaleString(), "minutes"];
+  const day = (t) => new Date(t).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  const maxH = Math.max(1, ...w.hours);
+  const speedName = { slowed: "Slowed", screwed: "Screwed", syrup: "Syrup" };
+  view.innerHTML = head + `<div class="wr">
+    <section class="wr-card wr-hero appear">
+      <small>${period === "all" ? "All time on Platter" : `Your ${esc(w.label)} so far`}</small>
+      <div class="wr-big">${big[0]}<span>${big[1]}</span></div>
+      <p>of music: ${w.plays.toLocaleString()} plays, ${w.songs.toLocaleString()} different songs by ${w.artists.toLocaleString()} artists.</p>
+      <button class="pill primary" id="wr-play">${icon("play")}Play your top songs</button>
+    </section>
+    <section class="wr-card appear" style="--d:60ms"><h2>Top Songs</h2>
+      ${w.topSongs.map((s, i) => `<div class="wr-row"><b class="wr-n">${i + 1}</b><img loading="lazy" src="${cover(s.coverArt || s.albumId, 120)}" alt="">
+        <span><b>${esc(s.title)}</b><small>${esc(s.artist || "")}</small></span><i>${s.plays} play${s.plays === 1 ? "" : "s"}</i></div>`).join("")}</section>
+    <section class="wr-card appear" style="--d:120ms"><h2>Top Artists</h2>
+      ${w.topArtists.map((a, i) => `<div class="wr-row"><b class="wr-n">${i + 1}</b><img class="round" loading="lazy" src="${cover(a.coverArt, 120)}" alt="">
+        <span><b>${esc(a.name)}</b><small>${hoursText(Math.round(a.minutes))}</small></span></div>`).join("")}</section>
+    ${w.topAlbum ? `<section class="wr-card wr-album appear" style="--d:180ms"><h2>Album on Repeat</h2>
+      <a href="#/album/${esc(w.topAlbum.albumId || "")}"><img src="${cover(w.topAlbum.coverArt || w.topAlbum.albumId, 400)}" alt=""></a>
+      <b>${esc(w.topAlbum.name)}</b><small>${esc(w.topAlbum.artist || "")} · ${hoursText(Math.round(w.topAlbum.minutes))}</small></section>` : ""}
+    ${w.persona ? `<section class="wr-card wr-persona appear" style="--d:240ms"><small>Your listening personality</small>
+      <div class="wr-name">${esc(w.persona.name)}</div><p>${Math.round(w.persona.share * 100)}% ${esc(w.persona.line)}.</p>
+      <div class="wr-hours" aria-label="When you listen, by hour">${w.hours.map((m, h) => `<i style="height:${Math.max(3, (m / maxH) * 100)}%" title="${h}:00"></i>`).join("")}</div>
+      <div class="wr-hours-axis"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>12a</span></div></section>` : ""}
+    <section class="wr-tiles appear" style="--d:300ms">
+      <div class="wr-tile"><small>Longest streak</small><b>${w.longestStreak}</b><span>day${w.longestStreak === 1 ? "" : "s"} in a row</span></div>
+      ${w.biggestDay ? `<div class="wr-tile"><small>Biggest day</small><b>${hoursText(w.biggestDay.minutes).split(" ")[0]}</b><span>${hoursText(w.biggestDay.minutes).split(" ")[1]} on ${esc(day(w.biggestDay.at))}</span></div>` : ""}
+      <div class="wr-tile"><small>New artists</small><b>${w.newArtists.count}</b><span>${w.newArtists.names.length ? esc(w.newArtists.names.join(", ")) : "found something new"}</span></div>
+      <div class="wr-tile"><small>Slowed down</small><b>${Math.round(w.slowed.share * 100)}%</b><span>${w.slowed.favorite ? `mostly ${esc(speedName[w.slowed.favorite] || w.slowed.favorite)}` : "of your listening"}</span></div>
+    </section></div>`;
+  $("#wr-play").onclick = () => player.play(w.playlist.map((s) => toTrack(s)));      // your 50 most played, in order
 };
 
 screens.mix = async function mixScreen(id) {

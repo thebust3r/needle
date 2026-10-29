@@ -147,4 +147,12 @@ struct HelperClient {
         try await send("jobs/\(id)/download", method: "POST", body: ["method": method, "indexes": indexes])
     }
     func remove(_ id: String) async throws { _ = try await send("jobs/\(id)", method: "DELETE") as OK }
+
+    // the listening history shared by the app and the web (for Wrapped)
+    struct Plays: Decodable { var plays: [SharedPlay] }
+    func history() async throws -> [SharedPlay] { (try await send("history") as Plays).plays }
+    func uploadHistory(_ plays: [SharedPlay]) async throws {
+        let body = try JSONSerialization.jsonObject(with: JSONEncoder().encode(["plays": plays]))
+        _ = try await send("history", method: "POST", body: body as? [String: Any]) as OK
+    }
 }
