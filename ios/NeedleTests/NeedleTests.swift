@@ -1355,7 +1355,10 @@ final class WrappedTests: XCTestCase {
     func testMonth() {
         let w = Wrapped.compute(history(), period: .month, now: at(10, 29, 12))
         XCTAssertEqual(w.plays, 13, "skips don't count")
-        XCTAssertEqual(w.minutes, Int(((7 * 200 + 3 * 180 + 220 + 120 + 200) / 60.0).rounded()), "a play with no end time lasts until the next one")
+        let screwedSeconds: Double = 7 * 200 + 3 * 180
+        let otherSeconds: Double = 220 + 120 + 200
+        let totalMinutes: Double = (screwedSeconds + otherSeconds) / 60
+        XCTAssertEqual(w.minutes, Int(totalMinutes.rounded()), "a play with no end time lasts until the next one")
         XCTAssertEqual(w.topSongs.first?.id, "t6a"); XCTAssertEqual(w.topSongs.first?.plays, 7)
         XCTAssertEqual(w.topArtists.first?.name, "Three 6 Mafia"); XCTAssertEqual(w.topArtists.first?.coverArt, "c-t6a")
         XCTAssertEqual(w.topAlbum?.name, "Mystic Stylez")
@@ -1363,7 +1366,8 @@ final class WrappedTests: XCTestCase {
         XCTAssertEqual(w.longestStreak, 7)
         XCTAssertEqual(w.newArtists.count, 2, "UGK you already knew")
         XCTAssertFalse(w.newArtists.names.contains("UGK"))
-        XCTAssertEqual(w.slowedShare, (7 * 200 + 3 * 180) / Double(7 * 200 + 3 * 180 + 220 + 120 + 200), accuracy: 0.01)
+        let share: Double = screwedSeconds / (screwedSeconds + otherSeconds)
+        XCTAssertEqual(w.slowedShare, share, accuracy: 0.01)
         XCTAssertEqual(w.favoriteSpeed, "screwed")
     }
 
