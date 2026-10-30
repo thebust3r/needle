@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.5"
+VERSION = "1.5.1"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -890,8 +890,15 @@ def album_queries(title, artist):
     return uniq
 
 
-def pick_album_dirs(album, responses, limit=6):
-    """Folders (one user each) that hold this album: most of its songs, nothing else mixed in. Best first."""
+def title_words(t):
+    w = set(clean_title(t).split())
+    return w - {"and", "the", "a"} if len(w) > 1 else w     # "Pink + White" files often drop the "and"
+
+
+def pick_album_dirs(album, responses, limit=6, why=None):
+    """Folders (one user each) that hold this album: most of its songs, nothing else mixed in. Best first.
+    why: a dict that collects how many folders were turned down and for what (for the log)."""
+    why = why if why is not None else {}
     titles = album["tracks"]
     want_album = set(clean_title(album["title"]).split())
     wanted_variants = variant_words(album["title"])
@@ -911,23 +918,29 @@ def pick_album_dirs(album, responses, limit=6):
     for (user, d), e in dirs.items():
         files = e["files"]
         if len(files) > len(titles) + 8:          # a whole discography, not the album
+            why["too many files"] = why.get("too many files", 0) + 1
             continue
         dn = norm(d)
-        if words_match(want_album, set(dn.split())) > (1 if len(want_album) >= 4 else 0):
-            continue                              # folder isn't named for this album
         if variant_words(d.rsplit("/", 1)[-1]) - wanted_variants:
+            why["a different version"] = why.get("a different version", 0) + 1
             continue                              # instrumentals, slowed, live...
-        if arts and not any(f" {a} " in f" {dn} " for a in arts) and not any(
-                any(f" {a} " in " " + norm(f.get("filename", "")) + " " for a in arts) for f in files):
-            continue
         names = [set(norm(strip_track_no(os.path.splitext(f["filename"].replace("\\", "/").rsplit("/", 1)[-1])[0])).split()) for f in files]
         hit = 0
         for t in titles:
-            w = set(clean_title(t).split())
+            w = title_words(t)
             if w and any(words_match(w, n) <= (1 if len(w) >= 4 else 0) for n in names):
                 hit += 1
         cover = hit / max(1, len(titles))
-        if cover < 0.85:
+        if cover < 0.8:
+            why["missing songs"] = why.get("missing songs", 0) + 1
+            continue
+        named = words_match(want_album, set(dn.split())) <= (1 if len(want_album) >= 4 else 0)
+        if not named and cover < 0.95:
+            why["folder not named for the album"] = why.get("folder not named for the album", 0) + 1
+            continue
+        if arts and album.get("_artist_in_query") is False and not any(f" {a} " in f" {dn} " for a in arts) and not any(
+                any(f" {a} " in " " + norm(f.get("filename", "")) + " " for a in arts) for f in files):
+            why["wrong artist"] = why.get("wrong artist", 0) + 1
             continue
         r = e["r"]
         exts = [f["_ext"] for f in files]
@@ -977,7 +990,10 @@ def step_salbum(job, t, now):
         s = slskd(f"searches/{t['_search']}")
         done = (s or {}).get("isComplete") or "Completed" in str((s or {}).get("state", ""))
         responses = slskd(f"searches/{t['_search']}/responses") or []
-        picks = pick_album_dirs(alb, responses)
+        qs = album_queries(alb["title"], alb["artist"])
+        alb["_artist_in_query"] = t.get("_qi", 0) < len(qs) and bool(alb.get("artist")) and not qs[t.get("_qi", 0)] == squash_initials(clean_title(alb["title"]))
+        why = {}
+        picks = pick_album_dirs(alb, responses, why=why)
         tried = {p["user"] + "|" + p["dir"] for p in t.get("_tried", [])}
         picks = [p for p in picks if p["user"] + "|" + p["dir"] not in tried]
         good_now = [p for p in picks if p["cover"] >= 0.99]
@@ -988,11 +1004,15 @@ def step_salbum(job, t, now):
             slskd(f"searches/{t['_search']}", "DELETE")
         except Exception:
             pass
+        nfiles = sum(len(r.get("files") or []) for r in responses)
+        log(f"album search '{qs[min(t.get('_qi', 0), len(qs) - 1)]}': {len(responses)} people, {nfiles} files, "
+            f"{len(picks)} complete copies" + (f"; turned down: {why}" if why else ""))
         if not picks:
             t.update(status="queued", _qi=t.get("_qi", 0) + 1, note="Trying another search")
             t["_next"] = now
             return
         t["_picks"], t["_try"] = picks, -1
+        log("album: downloading from", picks[0]["user"], picks[0]["dir"], f"({len(picks[0]['files'])} files, {int(picks[0]['cover'] * 100)}% of songs)")
         album_next_pick(job, t, now)
     elif st == "downloading":
         p = t["_picks"][t["_try"]]
