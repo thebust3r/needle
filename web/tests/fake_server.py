@@ -1,5 +1,5 @@
 """A pretend Navidrome: serves the web app and fake /rest answers with generated audio and covers."""
-import io, json, math, os, random, struct, sys, wave, colorsys
+import io, json, re, math, os, random, struct, sys, wave, colorsys
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from PIL import Image, ImageDraw
@@ -96,11 +96,15 @@ class H(SimpleHTTPRequestHandler):
             return self.json({"plays": HISTORY})
         if u.path == "/_history":
             return self.json(HISTORY)
+        if u.path.startswith("/helper/find/library-album/") and not HELPER:
+            return self.json({"tracks": []})          # stand-in: "not in the catalog"
         if u.path.startswith("/helper/"):
             return self.forward(HELPER or "http://127.0.0.1:1", "GET")
         if u.path == "/_created":
             b = json.dumps(CREATED).encode(); self.send_response(200); self.end_headers(); return self.wfile.write(b)
-        if REST_FWD and u.path in ("/rest/getPlaylist", "/rest/getPlaylists"):
+        if REST_FWD and (u.path in ("/rest/getPlaylist", "/rest/getPlaylists")
+                         or (u.path == "/rest/getAlbum" and q.get("id", "").startswith("alb-"))
+                         or (u.path == "/rest/getSong" and re.fullmatch(r"s\d+", q.get("id", "")))):
             return self.forward(REST_FWD, "GET")
         if u.path.startswith("/lrclib/api/"):
             title = q.get("track_name", "")

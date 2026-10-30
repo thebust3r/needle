@@ -671,3 +671,10 @@ body.viz-full #np { visibility: hidden; }
 .dl-bar i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
 .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); border-top-color: var(--accent); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* library album: songs you don't have yet */
+.row.missing { opacity: .45; }
+.row.missing .get-btn { opacity: 1; }
+.album-missing { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; margin: 0 20px 14px; padding: 14px 16px; border-radius: 14px; background: rgba(255,255,255,.06); font-size: 14px; color: var(--sec); }
+.album-missing b { color: #fff; font-weight: 600; }
+.album-missing .pill { flex: none; width: auto; display: inline-flex; padding: 10px 18px; font-size: 15px; }

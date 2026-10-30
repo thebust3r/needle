@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.4"
+VERSION = "1.5"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -1053,6 +1053,12 @@ def album_next_pick(job, t, now, why=None):
             return
         return album_failed(job, t, now, f"{why}, and no one else had the whole album." if why else "No one had a complete copy.")
     p = picks[t["_try"]]
+    skip = [set(clean_title(x).split()) for x in t["_alb"].get("skip", [])]
+    if skip:
+        def owned(f):
+            n = set(norm(strip_track_no(os.path.splitext(f["filename"].replace("\\", "/").rsplit("/", 1)[-1])[0])).split())
+            return any(w and words_match(w, n) <= (1 if len(w) >= 4 else 0) for w in skip)
+        p["files"] = [f for f in p["files"] if not owned(f)] or p["files"]
     slskd(f"transfers/downloads/{quote(p['user'])}", "POST", [{"filename": f["filename"], "size": f["size"]} for f in p["files"]])
     t.update(status="downloading", _since=now, progress=0, note=f"Downloading the album from {p['user']}")
     t.pop("_got", None)
@@ -1092,6 +1098,17 @@ def album_import(job, t, now, p):
         t["_next"] = now + TICK * 2
         return
     log("album downloaded:", alb["artist"], "-", alb["title"], f"({len(moved)} files from {p['user']})")
+    for old in alb.get("replace") or []:     # the single copies Platter got earlier: the album's copy replaces them
+        if not old:
+            continue
+        path = os.path.join(MUSIC_DIR, old)
+        if os.path.abspath(path).startswith(os.path.abspath(os.path.join(MUSIC_DIR, SONGS_FOLDER)) + os.sep) and \
+                os.path.dirname(os.path.abspath(path)) != os.path.abspath(dest_dir) and os.path.isfile(path):
+            try:
+                os.remove(path)
+                log("replaced the earlier single download", old)
+            except OSError:
+                pass
     Navidrome(job["creds"]).scan()
     for x in album_members(job, t):
         if x["status"] in ACTIVE or x is t:
@@ -1383,6 +1400,63 @@ def mark_library(nav, items):
     return items
 
 
+def full_album(nav, album_id):
+    """A library album next to the real album's full tracklist: which songs you have and which you don't."""
+    r = nav.call("getAlbum", [("id", album_id)]).get("album") or {}
+    name, artist = r.get("name") or "", r.get("artist") or ""
+    local = r.get("song") or []
+    if not name:
+        return None
+    cands = catalog_albums(f"{artist} {clean_title(name)}", 10) if artist else catalog_albums(clean_title(name), 10)
+    best, best_s = None, 0.0
+    for c in cands:
+        if artist and not artist_ok([artist], {"artist": c["artist"]}):
+            continue
+        sc = title_score(name, c["title"]) + (0.03 if c.get("type") == "album" else 0) + min(0.02, (c.get("tracks") or 0) / 1000)
+        if variant_words(name) != variant_words(c["title"]):
+            sc -= 0.2
+        if sc > best_s:
+            best, best_s = c, sc
+    if not best or best_s < 0.8:
+        return None
+    a = catalog_album(best["id"])
+    used = set()
+    for t in a["tracks"]:
+        hit, hs = None, 0.0
+        for s in local:
+            if s["id"] in used:
+                continue
+            sc = title_score(t["title"], s.get("title", ""))
+            if variant_words(t["title"]) != variant_words(s.get("title", "")):
+                sc -= 0.25
+            if sc > hs:
+                hit, hs = s, sc
+        if hit and hs >= 0.86:
+            t["songId"] = hit["id"]; used.add(hit["id"])
+    for t in a["tracks"]:          # songs you have on another album (a single, a compilation) count too
+        if not t.get("songId"):
+            try:
+                s = find_in_library(nav, t)
+            except Exception:
+                s = None
+            if s:
+                t["songId"] = s["id"]; t["elsewhere"] = True
+    a["extra"] = [s["id"] for s in local if s["id"] not in used]      # songs on your copy that aren't on this one (bonus tracks)
+    a["missing"] = sum(1 for t in a["tracks"] if not t.get("songId"))
+    return a
+
+
+def our_download(title, artists):
+    """The file Platter downloaded for this song earlier (in Needle Downloads), if it did."""
+    want = (clean_title(title), norm(primary_artist({"artists": artists})))
+    for j in JOBS.values():
+        for t in j.get("tracks", []):
+            f = t.get("file") or ""
+            if t.get("status") == "found" and f and not f.endswith("/") and (clean_title(t["title"]), norm(primary_artist(t))) == want:
+                return f
+    return None
+
+
 def downloads_job(creds):
     """Each person's running list of songs they asked for from Search (shown on the Download screen)."""
     with LOCK:
@@ -1480,7 +1554,13 @@ def queue_downloads(creds, items, album=None):
             busy.add(key)
             nxt += 1
             have = owned.get(k)
-            if salb:
+            if salb and have and not our_download(title, arts):
+                # your own copy (not something Platter downloaded): keep it, don't download it again
+                salb.setdefault("skip", []).append(title)
+                t.update(status="found", songId=have["id"], match=f'{have.get("artist", "")} - {have.get("title", "")}', note="Already in your library")
+            elif salb:
+                if have:
+                    salb.setdefault("replace", []).append(our_download(title, arts))
                 lead = next((x for x in added if x.get("method") == "salbum"), None)
                 if lead is None:
                     t.update(method="salbum", status="queued", _alb=salb, _next=0, note=f"Getting the whole album {salb['title']}")
@@ -1594,6 +1674,15 @@ class Handler(BaseHTTPRequestHandler):
             if kind == "album":
                 return self.send(200, {"albums": catalog_albums(text)})
             return self.send(200, {"songs": mark_library(nav, catalog_songs(text)[:25])})
+        mm = re.fullmatch(r"/find/library-album/([^/]+)", path)
+        if mm and method == "GET":
+            try:
+                a = full_album(Navidrome(creds), mm.group(1))
+            except RuntimeError as e:
+                return self.send(404, {"error": str(e)})
+            if not a:
+                return self.send(404, {"error": "Couldn't find this album in the catalog."})
+            return self.send(200, a)
         mm = re.fullmatch(r"/find/album/(dz\d+)", path)
         if mm and method == "GET":
             try:

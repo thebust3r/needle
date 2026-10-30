@@ -1234,7 +1234,8 @@ const screens = {
           ${a.artistId ? `<a class="by" href="#/artist/${esc(a.artistId)}">${esc(a.artist)}</a>` : `<span class="by">${esc(a.artist || "")}</span>`}
           <small>${esc(meta)}</small></div>
         ${playButtons()}
-        <div style="margin-top:14px">${tracks.map((t, i) => `${multi && (i === 0 || tracks[i - 1].disc !== t.disc) ? `<div class="disc">Disc ${t.disc || 1}</div>` : ""}${trackRow(t, i, false, t.track || i + 1)}`).join("")}</div></div>`;
+        <div id="album-list" style="margin-top:14px">${tracks.map((t, i) => `${multi && (i === 0 || tracks[i - 1].disc !== t.disc) ? `<div class="disc">Disc ${t.disc || 1}</div>` : ""}${trackRow(t, i, false, t.track || i + 1)}`).join("")}</div></div>`;
+      if (window.getMusic) getMusic.fillAlbum(id, tracks, a);
       palette(a.coverArt || a.id).then((p) => {
         const w = $(".album-wash");
         if (!w) return;

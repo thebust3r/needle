@@ -169,7 +169,55 @@ const getMusic = (() => {
     } catch { /* helper not set up */ }
   }
 
-  return { search, album, downloads, badge };
+  /** A library album: show the real album's whole tracklist, gray out the songs you don't have, offer to get them. */
+  async function fillAlbum(id, localTracks, a) {
+    let full;
+    try { full = await helper(`find/library-album/${encodeURIComponent(id)}`); } catch { return; }   // no helper, or not in the catalog
+    const list = $("#album-list");
+    if (!list || location.hash !== `#/album/${id}` || !full.tracks?.length) return;
+    const byId = new Map(localTracks.map((t) => [t.id, t]));
+    // songs you have on another album (a single, a compilation): load them so they play from here too
+    const away = full.tracks.filter((t) => t.songId && !byId.has(t.songId));
+    await Promise.all(away.map((t) => api("getSong", { id: t.songId }).then((r) => byId.set(t.songId, toTrack(r.song))).catch(() => {})));
+    if (!$("#album-list")) return;
+    const play = [], rows = [];
+    full.tracks.forEach((c, k) => {
+      const mine = c.songId && byId.get(c.songId);
+      if (mine) { rows.push(trackRow(mine, play.length, false, k + 1)); play.push(mine); }
+      else rows.push(`<div class="row missing" data-miss="${k}">
+          <span class="num">${k + 1}</span>
+          <div class="meta"><b>${esc(c.title)}</b><span>${esc(who(c))} · Not downloaded</span></div>
+          <span class="dur">${fmt(c.duration)}</span>
+          <button class="get-btn" data-get-one="${k}" aria-label="Download this song">${icon("download")}</button></div>`);
+    });
+    const extra = (full.extra || []).map((sid) => byId.get(sid)).filter(Boolean);
+    if (extra.length) {
+      rows.push(`<div class="disc">Also on your copy</div>`);
+      extra.forEach((t) => { rows.push(trackRow(t, play.length, false, "")); play.push(t); });
+    }
+    screenTracks = play;
+    const missing = full.tracks.filter((t) => !t.songId);
+    list.innerHTML = (missing.length ? `<div class="album-missing">
+        <span>${missing.length === full.tracks.length ? "None" : `${full.tracks.length - missing.length} of ${full.tracks.length}`} songs from <b>${esc(full.title)}</b> are in your library</span>
+        <button class="pill primary" id="get-missing">${icon("download")}Download ${missing.length === 1 ? "the Missing Song" : `${missing.length} Missing Songs`}</button></div>` : "")
+      + rows.join("");
+    list.onclick = async (e) => {
+      const one = e.target.closest("[data-get-one]");
+      if (one) { e.stopPropagation(); return get([full.tracks[+one.dataset.getOne]], one); }
+      const gm = e.target.closest("#get-missing");
+      if (gm) {
+        e.stopPropagation();
+        gm.disabled = true;
+        // the whole tracklist goes along so it's fetched as one album from one copy; songs you already have are left out
+        if (await get(full.tracks, null, { title: full.title, artist: full.artist })) {
+          gm.innerHTML = `${icon("check")}On the way`;
+          list.querySelectorAll("[data-get-one]").forEach((b) => { b.classList.add("sent"); b.innerHTML = icon("check"); b.disabled = true; });
+        } else gm.disabled = false;
+      }
+    };
+  }
+
+  return { search, album, downloads, badge, fillAlbum };
 })();
 window.getMusic = getMusic;
 

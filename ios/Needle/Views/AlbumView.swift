@@ -3,12 +3,19 @@ import SwiftUI
 struct AlbumView: View {
     @Environment(AppModel.self) private var app
     @Environment(Downloads.self) private var downloads
+    @Environment(Player.self) private var player
     let album: Album
     @State private var loader = Loader<(Album, [Track])>()
+    @State private var full: FullAlbum?
+    @State private var others: [String: Track] = [:]
+    @State private var sent: Set<String> = []
+    @State private var askedAll = false
 
     var body: some View {
         let info = loader.value?.0 ?? album
-        let tracks = loader.value?.1 ?? []
+        let local = loader.value?.1 ?? []
+        let merged = full.map { merge($0, local) }
+        let tracks = merged?.play ?? local
         var meta: [String] = []
         if let y = info.year, y > 0 { meta.append(String(y)) }
         if let g = info.genre, !g.isEmpty { meta.append(g) }
@@ -21,7 +28,11 @@ struct AlbumView: View {
                            meta: meta.joined(separator: " · "),
                            artTrack: tracks.first, coverArt: info.coverArt ?? info.id,
                            tracks: tracks, showTrackNumbers: true, loading: loader.loading && tracks.isEmpty,
-                           error: loader.error)
+                           error: loader.error,
+                           rows: merged?.rows,
+                           banner: full.flatMap { f in (f.missing ?? 0) > 0 ? AnyView(missingBanner(f)) : nil },
+                           onGetOne: { getOne($0) },
+                           sent: sent)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if !tracks.isEmpty { downloadButton(tracks) }
@@ -33,8 +44,148 @@ struct AlbumView: View {
                     let (a, songs) = try await app.client.album(album.id)
                     return (a, songs.map(Track.init(song:)))
                 }
+                await loadFull()
             }
     }
+
+    /// The real album's whole tracklist from the catalog (needs the helper on the NAS; skipped quietly without it).
+    private func loadFull() async {
+        guard let local = loader.value?.1, let f = try? await app.helper.fullAlbum(libraryId: album.id) else { return }
+        let have = Set(local.map(\.id))
+        var found: [String: Track] = [:]
+        for t in f.tracks {
+            guard let id = t.songId, !have.contains(id) else { continue }
+            if let s = try? await app.client.song(id) { found[id] = Track(song: s) }     // you have it on another album
+        }
+        others = found
+        full = f
+    }
+
+    private func merge(_ f: FullAlbum, _ local: [Track]) -> (rows: [AlbumRow], play: [Track]) {
+        var byId: [String: Track] = others
+        for t in local { byId[t.id] = t }
+        var rows: [AlbumRow] = []
+        var play: [Track] = []
+        for (k, c) in f.tracks.enumerated() {
+            if let id = c.songId, let t = byId[id] {
+                rows.append(.have(t, k + 1))
+                play.append(t)
+            } else {
+                rows.append(.missing(c, k + 1))
+            }
+        }
+        let extra = (f.extra ?? []).compactMap { byId[$0] }
+        if !extra.isEmpty {
+            rows.append(.header("Also on your copy"))
+            for t in extra {
+                rows.append(.have(t, 0))
+                play.append(t)
+            }
+        }
+        return (rows, play)
+    }
+
+    private func missingBanner(_ f: FullAlbum) -> some View {
+        let n = f.missing ?? 0
+        let haveCount = f.tracks.count - n
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(haveCount == 0 ? "None of \(f.title) is in your library yet" : "\(haveCount) of \(f.tracks.count) songs from \(f.title) are in your library")
+                .font(.subheadline).foregroundStyle(Theme.secondary)
+            Button { getAll(f) } label: {
+                Label(askedAll ? "On the way" : n == 1 ? "Download the Missing Song" : "Download \(n) Missing Songs",
+                      systemImage: askedAll ? "checkmark" : "arrow.down.circle.fill")
+                    .padding(.horizontal, 18)
+            }
+            .buttonStyle(FilledPill(fill: askedAll ? Color.white.opacity(0.1) : Theme.accent, text: askedAll ? .white : .black))
+            .font(.headline)
+            .disabled(askedAll)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+    }
+
+    private func getAll(_ f: FullAlbum) {
+        askedAll = true
+        for t in f.tracks where t.songId == nil { sent.insert(t.id) }
+        let h = app.helper
+        Task {
+            do {
+                _ = try await h.getAlbum(f)
+                player.errorMessage = "Getting the rest of \(f.title)"
+            } catch {
+                askedAll = false
+                for t in f.tracks where t.songId == nil { sent.remove(t.id) }
+                player.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func getOne(_ s: CatalogSong) {
+        sent.insert(s.id)
+        let h = app.helper
+        Task {
+            do {
+                _ = try await h.get([s])
+                player.errorMessage = "Downloading “\(s.title)”"
+            } catch {
+                sent.remove(s.id)
+                player.errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// A row on an album screen: a song you have, one you don't (grayed out), or a little heading.
+enum AlbumRow: Identifiable {
+    case have(Track, Int)
+    case missing(CatalogSong, Int)
+    case header(String)
+
+    var id: String {
+        switch self {
+        case .have(let t, let n): return "have-\(n)-\(t.id)"
+        case .missing(let s, let n): return "missing-\(n)-\(s.id)"
+        case .header(let h): return "header-\(h)"
+        }
+    }
+}
+
+/// A song from the album you don't have yet: grayed out, with a download button.
+struct MissingSongRow: View {
+    let song: CatalogSong
+    let number: Int
+    let sent: Bool
+    let get: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(String(number)).font(.subheadline.monospacedDigit()).foregroundStyle(Theme.tertiary).frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(song.title).lineLimit(1)
+                Text(sent ? "On the way" : "Not downloaded").font(.caption).foregroundStyle(Theme.secondary).lineLimit(1)
+            }
+            .opacity(0.45)
+            Spacer(minLength: 8)
+            if let d = song.duration, d > 0 {
+                Text(formatTime(Double(d))).font(.caption.monospacedDigit()).foregroundStyle(Theme.tertiary).opacity(0.6)
+            }
+            Button(action: get) {
+                Image(systemName: sent ? "checkmark.circle.fill" : "arrow.down.circle")
+                    .font(.title2)
+                    .foregroundStyle(sent ? Theme.accent : .white)
+                    .frame(width: 40, height: 40)
+            }
+            .buttonStyle(.plain)
+            .disabled(sent)
+            .accessibilityLabel(sent ? "On the way" : "Download \(song.title)")
+        }
+        .padding(.leading, 20).padding(.trailing, 12)
+        .padding(.vertical, 7)
+    }
+}
 
     @ViewBuilder
     private func downloadButton(_ tracks: [Track]) -> some View {
@@ -64,6 +215,11 @@ struct AlbumLayout: View {
     var showTrackNumbers = true
     var loading = false
     var error: String? = nil
+    /// The album's full tracklist (songs you don't have are grayed out); nil shows just `tracks`.
+    var rows: [AlbumRow]? = nil
+    var banner: AnyView? = nil
+    var onGetOne: ((CatalogSong) -> Void)? = nil
+    var sent: Set<String> = []
 
     @State private var palette = Palette.fallback
 
@@ -83,6 +239,12 @@ struct AlbumLayout: View {
                 if loading { ProgressView().padding(40) }
                 if let error, tracks.isEmpty { StatusView(icon: "wifi.exclamationmark", title: "Couldn't load this album", message: error) }
 
+                if let rows {
+                    if let banner { banner }
+                    LazyVStack(spacing: 0) {
+                        ForEach(rows) { row in rowView(row) }
+                    }
+                } else {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(tracks.enumerated()), id: \.element.id) { i, t in
                         if multiDisc, t.disc != tracks[safe: i - 1]?.disc {
@@ -95,6 +257,7 @@ struct AlbumLayout: View {
                             player.play(tracks, startAt: i)
                         }
                     }
+                }
                 }
             }
             .padding(.bottom, 24)
@@ -119,6 +282,23 @@ struct AlbumLayout: View {
                 p = await ArtworkStore.shared.palette(for: probe)
             } else { p = .fallback }
             withAnimation(.easeInOut(duration: 0.5)) { palette = p }
+        }
+    }
+
+    @ViewBuilder
+    private func rowView(_ row: AlbumRow) -> some View {
+        switch row {
+        case .have(let t, let n):
+            TrackRow(track: t, number: n > 0 ? n : nil, showArtwork: false) {
+                player.play(tracks, startAt: tracks.firstIndex(of: t) ?? 0)
+            }
+        case .missing(let s, let n):
+            MissingSongRow(song: s, number: n, sent: sent.contains(s.id)) { onGetOne?(s) }
+        case .header(let h):
+            Text(h)
+                .font(.footnote.weight(.semibold)).foregroundStyle(Theme.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 6)
         }
     }
 

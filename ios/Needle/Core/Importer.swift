@@ -65,6 +65,18 @@ struct CatalogAlbum: Decodable, Identifiable, Hashable {
     }
 }
 
+/// One of your library albums next to the real album's full tracklist (songId set on the songs you have).
+struct FullAlbum: Decodable {
+    let id: String
+    var title: String
+    var artist: String
+    var cover: String?
+    var year: String?
+    var tracks: [CatalogSong]
+    var extra: [String]?
+    var missing: Int?
+}
+
 struct CatalogAlbumDetail: Decodable {
     let id: String
     var title: String
@@ -191,6 +203,15 @@ struct HelperClient {
     func findSongs(_ q: String) async throws -> [CatalogSong] { (try await send("find", query: ["q": q]) as SongHits).songs }
     func findAlbums(_ q: String) async throws -> [CatalogAlbum] { (try await send("find", query: ["q": q, "kind": "album"]) as AlbumHits).albums }
     func catalogAlbum(_ id: String) async throws -> CatalogAlbumDetail { try await send("find/album/\(id)") }
+    func fullAlbum(libraryId id: String) async throws -> FullAlbum { try await send("find/library-album/\(id)") }
+    /// Gets the album as one download (one person's copy); songs you already have are left out.
+    func getAlbum(_ a: FullAlbum) async throws -> Int {
+        let list: [[String: Any]] = a.tracks.map { s -> [String: Any] in
+            ["title": s.title, "artists": s.artists, "duration": s.duration ?? 0, "album": a.title, "cover": s.cover ?? ""]
+        }
+        let body: [String: Any] = ["tracks": list, "album": ["title": a.title, "artist": a.artist]]
+        return (try await send("get", method: "POST", body: body) as GetResult).added
+    }
     /// Starts downloading these; returns how many were new (the rest were already on the way).
     /// album: get the whole album as one download through Lidarr (one clean copy) instead of song by song.
     func get(_ songs: [CatalogSong], album: CatalogAlbumDetail? = nil) async throws -> Int {

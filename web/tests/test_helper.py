@@ -231,6 +231,13 @@ try:
         if x and x[0]["status"] == "failed": break
         time.sleep(0.2)
     check("album no one has says so (not split up)", x and x[0]["status"] == "failed" and "whole album" in x[0]["note"], x)
+    import hashlib as _h
+    aid = "alb-" + _h.md5("M83|Hurry Up, We're Dreaming".encode()).hexdigest()[:8]
+    code, fa = call(f"/find/library-album/{aid}")
+    check("library album shows the real album's full tracklist", code == 200 and [t["title"] for t in fa.get("tracks", [])] == ["Midnight City", "Wait"], fa)
+    check("songs you have are marked, so the rest can be grayed out", all(t.get("songId") for t in fa.get("tracks", [])) and fa.get("missing") == 0, fa)
+    code, _ = call("/find/library-album/alb-nope")
+    check("unknown library album is a 404", code == 404)
     code, jl = call("/jobs")
     check("downloads don't show up as an import", all(j.get("kind") != "downloads" for j in jl["jobs"]))
     code, d = call("/downloads/clear", {})

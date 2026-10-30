@@ -176,6 +176,22 @@ async def main():
         await pg.wait_for_selector("a.nav-row[href='#/downloads']")
         check("Library links to Downloads", True)
 
+        # a library album you only have part of: the whole tracklist, missing songs grayed out
+        import hashlib as _h
+        aid = "alb-" + _h.md5("Drake|Scorpion".encode()).hexdigest()[:8]
+        await pg.goto(W + f"#/album/{aid}")
+        await pg.wait_for_selector("#album-list .row.missing", timeout=15000)
+        txt = await pg.inner_text("#album-list")
+        check("album shows every song, in order", txt.index("Nonstop") < txt.index("God's Plan") < txt.index("In My Feelings"), txt[:300])
+        check("songs you don't have are grayed out", await pg.locator("#album-list .row.missing").count() == 2)
+        check("the song you have still plays", await pg.locator("#album-list .row[data-index='0']", has_text="God's Plan").count() == 1)
+        check("offers to download the missing songs", "2 Missing Songs" in await pg.inner_text("#get-missing"))
+        await pg.wait_for_timeout(300)
+        await pg.screenshot(path=os.path.join(SHOTS, "get-4-library-album.png"))
+        await pg.click("#get-missing")
+        await pg.wait_for_function("document.querySelector('#get-missing').textContent.includes('On the way')")
+        check("Download Missing sends it off as one album", True)
+
         # wide screen
         await pg.set_viewport_size({"width": 1280, "height": 900})
         await pg.goto(W + "#/import")

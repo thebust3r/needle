@@ -36,9 +36,10 @@ def scan():
             rel = os.path.relpath(p, MUSIC)
             parts = rel.replace("\\", "/").split("/")
             artist = parts[1] if parts[0] == "Needle Downloads" and len(parts) > 2 else os.path.basename(root)
+            album = parts[2] if parts[0] == "Needle Downloads" and len(parts) > 3 else "Album"
             name = re.sub(r"^\d+\s*[-.]?\s*", "", os.path.splitext(f)[0])
             if " - " in name: artist, name = name.split(" - ", 1)
-            add_song(name, artist, 0, rel)
+            add_song(name, artist, 0, rel, album)
 
 def auth_ok(q):
     return q.get("u") == USER and q.get("t") == hashlib.md5((PASS + q.get("s", "")).encode()).hexdigest()
@@ -168,6 +169,11 @@ class H(BaseHTTPRequestHandler):
             ep = p[6:].replace(".view", "")
             with LOCK:
                 if ep == "ping": return self.sub({})
+                if ep == "getAlbum":
+                    aid = one.get("id", "")
+                    mine = [s for s in songs.values() if "alb-" + hashlib.md5((s["artist"] + "|" + s["album"]).encode()).hexdigest()[:8] == aid]
+                    if not mine: return self.sub({"error": {"code": 70, "message": "Album not found"}}, ok=False)
+                    return self.sub({"album": {"id": aid, "name": mine[0]["album"], "artist": mine[0]["artist"], "song": mine}})
                 if ep == "startScan": scan(); return self.sub({"scanStatus": {"scanning": True}})
                 if ep == "search3":
                     words = [w for w in re.split(r"\W+", one.get("query", "").lower()) if w]
@@ -246,11 +252,18 @@ class H(BaseHTTPRequestHandler):
         if p == "/deezer/search/album":
             text = q.get("q", [""])[0].lower()
             return self.j({"data": [{"id": 77, "title": "Hurry Up, We're Dreaming", "artist": {"name": "M83"}, "nb_tracks": 2,
-                                     "cover_medium": "http://x/c.jpg", "record_type": "album"}] if "hurry" in text or "m83" in text else []})
+                                     "cover_medium": "http://x/c.jpg", "record_type": "album"}] if "hurry" in text or "m83" in text else
+                            [{"id": 79, "title": "Scorpion", "artist": {"name": "Drake"}, "nb_tracks": 3, "cover_medium": "http://x/s.jpg", "record_type": "album"}]
+                            if "scorpion" in text else []})
         if p == "/deezer/album/77":
             return self.j({"id": 77, "title": "Hurry Up, We're Dreaming", "artist": {"name": "M83"}, "release_date": "2011-10-18", "cover_medium": "http://x/c.jpg",
                            "tracks": {"data": [{"title": "Midnight City", "duration": 244, "artist": {"name": "M83"}},
                                                {"title": "Wait", "duration": 343, "artist": {"name": "M83"}}]}})
+        if p == "/deezer/album/79":
+            return self.j({"id": 79, "title": "Scorpion", "artist": {"name": "Drake"}, "release_date": "2018-06-29", "cover_medium": "http://x/s.jpg",
+                           "tracks": {"data": [{"title": "Nonstop", "duration": 238, "artist": {"name": "Drake"}},
+                                               {"title": "God's Plan", "duration": 199, "artist": {"name": "Drake"}},
+                                               {"title": "In My Feelings", "duration": 217, "artist": {"name": "Drake"}}]}})
         if p.startswith("/deezer/album/"):
             return self.j({"error": {"type": "DataException", "message": "no data"}})
         # MusicBrainz
