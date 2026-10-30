@@ -214,6 +214,11 @@ try:
     wait = [t for t in d["tracks"] if t["title"] == "Wait"][0]
     check("album songs wait on Lidarr, not Soulseek", wait["status"] == "album" and "Lidarr" in wait["note"], wait)
     check("no Soulseek search for the album's songs", "m83 wait" not in state()["slsk"])
+    old_style = [dict(t, title=n) for t, n in zip(a["tracks"] * 2, ["Intro", "Reunion", "Outro"])]
+    n0 = len([x for x in state()["lidarr"] if x[1] == "album/lookup"])
+    code, r = call("/get", {"tracks": old_style})
+    check("an album sent as a list of songs (old app) still goes to Lidarr", code == 200 and r.get("lidarr")
+          and len([x for x in state()["lidarr"] if x[1] == "album/lookup"]) > n0, r)
     code, r = call("/get", {"tracks": [{"title": "X", "artists": ["Nobody"]}], "album": {"title": "Not Real", "artist": "Nobody"}})
     check("album Lidarr doesn't know is refused, not split up", code == 400 and "Lidarr" in r.get("error", ""), r)
     code, jl = call("/jobs")

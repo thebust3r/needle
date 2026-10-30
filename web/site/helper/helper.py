@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -1344,8 +1344,20 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(items, list) or not items:
                 return self.send(400, {"error": "Pick something to download."})
             album = b.get("album") if isinstance(b.get("album"), dict) else None
+            items = [x for x in items if isinstance(x, dict)]
+            if not album and len(items) >= 3:
+                # an older app/page sends a whole album as a list of songs: spot that and still get it as one album
+                albums = {str(x.get("album") or "").strip() for x in items}
+                artists = {norm(primary_artist({"artists": [str(a) for a in (x.get("artists") or []) if a]})) for x in items}
+                if len(albums) == 1 and "" not in albums and len(artists) == 1:
+                    album = {"title": albums.pop(), "artist": primary_artist({"artists": [str(a) for a in (items[0].get("artists") or []) if a]})}
+            if album:
+                log("album request:", album.get("artist"), "-", album.get("title"), "| Lidarr", "on" if LIDARR and LIDARR_KEY else "OFF")
+                if not (LIDARR and LIDARR_KEY) or "PASTE" in LIDARR_KEY:
+                    return self.send(400, {"error": "Whole albums download through Lidarr, and Lidarr isn't set up in the helper. "
+                                                    "Put Lidarr's API key (Lidarr > Settings > General) in the compose file's LIDARR_API_KEY."})
             try:
-                job, added = queue_downloads(creds, [x for x in items if isinstance(x, dict)], album)
+                job, added = queue_downloads(creds, items, album)
             except HTTPError as e:
                 return self.send(502, {"error": f"Lidarr said no: {e.read().decode('utf-8', 'replace')[:200] or e.code}"})
             except RuntimeError as e:
