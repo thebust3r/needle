@@ -138,8 +138,8 @@ try:
     check("picked the fast FLAC, not the remix", "Hurry Up We're Dreaming" not in by["Midnight City"].get("file", "x") and by["Midnight City"].get("file", "").endswith("04 - Midnight City.flac"), by["Midnight City"])
     check("Weird Fishes fell back to the second user", by["Weird Fishes"]["status"] == "found", by["Weird Fishes"])
     check("remix-only song reported, not grabbed", by["Obscure Song"]["status"] == "failed" and "Soulseek" in by["Obscure Song"]["note"], by["Obscure Song"])
-    check("files moved into Music/Needle Downloads/<artist>", os.path.exists(os.path.join(music, "Needle Downloads", "M83", "04 - Midnight City.flac"))
-          and os.path.exists(os.path.join(music, "Needle Downloads", "Radiohead", "04 - Weird Fishes_Arpeggi.mp3")))
+    check("files moved into Music/Needle Downloads/<artist>/<album>", os.path.exists(os.path.join(music, "Needle Downloads", "M83", "Hurry Up, We're Dreaming", "04 - Midnight City.flac"))
+          and os.path.exists(os.path.join(music, "Needle Downloads", "Radiohead", "Singles", "04 - Weird Fishes_Arpeggi.mp3")))
     check("downloads folder cleaned up", not any(f for _, _, fs in os.walk(downloads) for f in fs))
     pl = state()["playlists"][j["playlistId"]]
     order = [t["songId"] for t in j["tracks"] if t.get("songId")]

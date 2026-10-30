@@ -34,7 +34,8 @@ def scan():
             if p in seen_files: continue
             seen_files.add(p)
             rel = os.path.relpath(p, MUSIC)
-            artist = os.path.basename(root)
+            parts = rel.replace("\\", "/").split("/")
+            artist = parts[1] if parts[0] == "Needle Downloads" and len(parts) > 2 else os.path.basename(root)
             name = re.sub(r"^\d+\s*[-.]?\s*", "", os.path.splitext(f)[0])
             if " - " in name: artist, name = name.split(" - ", 1)
             add_song(name, artist, 0, rel)

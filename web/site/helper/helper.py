@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.3"
+VERSION = "1.3.1"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -696,9 +696,24 @@ def find_download(filename, size):
     return best[1] if best else None
 
 
+def album_name_for(t):
+    """The album this song is on: from the search result, or looked up in the catalog; 'Singles' if unknown."""
+    if t.get("album"):
+        return t["album"]
+    try:
+        want = norm(primary_artist(t))
+        for x in catalog_songs(f"{primary_artist(t)} {clean_title(t['title'])}", 10):
+            if x.get("album") and title_score(t["title"], x["title"]) >= 0.86 and \
+                    (not want or artist_ok([primary_artist(t)], {"artist": x["artists"][0] if x["artists"] else ""})):
+                return x["album"]
+    except Exception:
+        pass
+    return "Singles"
+
+
 def move_into_library(t, src):
     artist = primary_artist(t) or "Unknown Artist"
-    dest_dir = os.path.join(MUSIC_DIR, SONGS_FOLDER, safe_name(artist))
+    dest_dir = os.path.join(MUSIC_DIR, SONGS_FOLDER, safe_name(artist), safe_name(album_name_for(t)))
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, safe_name(os.path.basename(src)))
     if not os.path.exists(dest):
