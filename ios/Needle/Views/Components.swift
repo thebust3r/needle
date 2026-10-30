@@ -78,6 +78,14 @@ struct TrackRow: View {
     private static let trigger: CGFloat = 80
 
     var body: some View {
+        if Deleter.shared.deleted.contains(track.id) {
+            EmptyView()
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
         ZStack {
             swipeBackground
             HStack(spacing: 0) {
@@ -207,6 +215,58 @@ struct TrackRow: View {
                     player.errorMessage = on ? "Added to Favorites" : "Removed from Favorites"
                 }
             }
+    }
+}
+
+/// "Delete from Library": asks first, then has the helper on the NAS remove the files (into its trash folder).
+@Observable final class Deleter {
+    static let shared = Deleter()
+    struct Request: Identifiable { let id = UUID(); let tracks: [Track]; let what: String }
+    var request: Request?
+    /// Songs deleted this session, so lists hide them right away (the library catches up after its scan).
+    private(set) var deleted: Set<String> = []
+
+    func ask(_ tracks: [Track], what: String? = nil) {
+        let remote = tracks.filter { !$0.isLocal }
+        guard !remote.isEmpty else { return }
+        request = Request(tracks: remote, what: what ?? (remote.count == 1 ? "“\(remote[0].title)”" : "\(remote.count) songs"))
+    }
+
+    @MainActor func perform(_ r: Request, helper: HelperClient, player: Player) {
+        let ids = r.tracks.map(\.id)
+        Task { @MainActor in
+            do {
+                let res = try await helper.delete(songIds: ids)
+                if res.deleted > 0 { deleted.formUnion(ids) }
+                if res.deleted == 0 {
+                    player.errorMessage = "Couldn't find the file\(ids.count == 1 ? "" : "s") on the NAS"
+                } else {
+                    let what = res.deleted == 1 ? "Deleted it" : "Deleted \(res.deleted) songs"
+                    player.errorMessage = res.missing.isEmpty ? what : "\(what) · couldn't find \(res.missing.count)"
+                }
+            } catch {
+                player.errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// The "are you sure" for Deleter, attached to the app's root and to Now Playing.
+struct DeleteConfirm: ViewModifier {
+    @Environment(AppModel.self) private var app
+    @Environment(Player.self) private var player
+    var enabled = true
+
+    func body(content: Content) -> some View {
+        let d = Deleter.shared
+        return content.alert("Delete from your library?",
+                      isPresented: Binding(get: { enabled && d.request != nil }, set: { if !$0 { d.request = nil } }),
+                      presenting: d.request) { r in
+            Button("Delete", role: .destructive) { d.perform(r, helper: app.helper, player: player) }
+            Button("Cancel", role: .cancel) {}
+        } message: { r in
+            Text("\(r.what) will be removed from your NAS. The files go to the trash folder there (helper-data/trash), so you can get them back.")
+        }
     }
 }
 
@@ -340,6 +400,7 @@ struct TrackMenu: View {
             if let onRemove {
                 Button(role: .destructive, action: onRemove) { Label("Remove from This Playlist", systemImage: "minus.circle") }
             }
+            Button(role: .destructive) { Deleter.shared.ask(remote) } label: { Label("Delete from Library…", systemImage: "trash.slash") }
             if remote.allSatisfy({ downloads.isSaved($0.id) }) {
                 Button(role: .destructive) { downloads.remove(remote) } label: { Label("Remove Download", systemImage: "trash") }
             } else {

@@ -169,6 +169,12 @@ class H(BaseHTTPRequestHandler):
             ep = p[6:].replace(".view", "")
             with LOCK:
                 if ep == "ping": return self.sub({})
+                if ep == "getSong":
+                    so = songs.get(one.get("id", ""))
+                    if not so: return self.sub({"error": {"code": 70, "message": "Song not found"}}, ok=False)
+                    full = os.path.join(MUSIC, so["path"])
+                    extra = {"size": os.path.getsize(full), "suffix": so["path"].rsplit(".", 1)[-1]} if os.path.isfile(full) else {}
+                    return self.sub({"song": dict(so, path="fake/" + so["path"], **extra)})
                 if ep == "getAlbum":
                     aid = one.get("id", "")
                     mine = [s for s in songs.values() if "alb-" + hashlib.md5((s["artist"] + "|" + s["album"]).encode()).hexdigest()[:8] == aid]

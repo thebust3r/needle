@@ -191,6 +191,15 @@ async def main():
         await pg.click("#get-missing")
         await pg.wait_for_function("document.querySelector('#get-missing').textContent.includes('On the way')")
         check("Download Missing sends it off as one album", True)
+        await pg.click("#album-list .row[data-index='0'] .more")
+        await pg.click("#menu [data-act='delete']")
+        await pg.wait_for_selector("#menu [data-del='yes']")
+        await pg.click("#menu [data-del='yes']")
+        await pg.wait_for_function("document.querySelector('#toast') && document.querySelector('#toast').textContent.startsWith('Deleted')", timeout=15000)
+        check("delete a song from the library: its file is moved out of the music folder",
+              not any(f.startswith("05 - God") for _, _, fs in os.walk(os.path.join(music, "Needle Downloads", "Drake")) for f in fs))
+        check("...and its row goes away", await pg.locator("#album-list .row", has_text="God's Plan").count() == 0)
+        check("album page has Delete Album", await pg.locator("#del-album").count() == 1)
 
         # wide screen
         await pg.set_viewport_size({"width": 1280, "height": 900})

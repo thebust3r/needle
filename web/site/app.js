@@ -789,6 +789,7 @@ function showMenu(title, tracks, ctx = null) {
     ${real.length ? `<button data-act="playlist">${icon("plus")}Add to Playlist…</button>` : ""}
     ${real.length ? `<button data-act="star">${icon(allStarred ? "heartfill" : "heart")}${allStarred ? "Remove from Favorites" : "Add to Favorites"}</button>` : ""}
     ${ctx?.playlistId && ctx.index != null ? `<button data-act="unlist">${icon("minus")}Remove from This Playlist</button>` : ""}
+    ${real.length ? `<button data-act="delete" class="danger">${icon("x")}Delete from Library…</button>` : ""}
     ${tracks.length === 1 && tracks[0].albumId ? `<button data-act="album">${icon("album")}Go to Album</button>` : ""}
     ${tracks.length === 1 && tracks[0].artistId ? `<button data-act="artist">${icon("mic")}Go to Artist</button>` : ""}
   </div>`;
@@ -796,6 +797,7 @@ function showMenu(title, tracks, ctx = null) {
   m.onclick = (e) => {
     const act = e.target.closest("button")?.dataset.act;
     if (act === "playlist") return showPlaylistPicker(real);
+    if (act === "delete") return confirmDelete(real, tracks.length === 1 ? `“${tracks[0].title}”` : `${real.length} songs`);
     m.hidden = true;
     if (act === "next") player.playNext(tracks);
     if (act === "queue") player.addToQueue(tracks);
@@ -803,6 +805,29 @@ function showMenu(title, tracks, ctx = null) {
     if (act === "unlist") removeFromPlaylist(ctx.playlistId, ctx.index);
     if (act === "album") { closeNP(); location.hash = `#/album/${tracks[0].albumId}`; }
     if (act === "artist") { closeNP(); location.hash = `#/artist/${tracks[0].artistId}`; }
+  };
+}
+
+/** Deletes songs' files from the NAS (the helper moves them to a trash folder there, so it can be undone). */
+function confirmDelete(tracks, what, after) {
+  const m = $("#menu");
+  m.hidden = false;
+  m.innerHTML = `<div class="panel"><p>Delete ${esc(what)} from your library?</p>
+    <p class="note" style="white-space:normal">The ${tracks.length === 1 ? "file is" : "files are"} moved to the trash folder on your NAS (helper-data/trash), so you can get ${tracks.length === 1 ? "it" : "them"} back if you need to.</p>
+    <button data-del="yes" class="danger">${icon("x")}Delete</button><button data-del="no">Cancel</button></div>`;
+  m.onclick = async (e) => {
+    const b = e.target.closest("[data-del]");
+    if (e.target !== m && !b) return;
+    m.hidden = true;
+    if (!b || b.dataset.del !== "yes") return;
+    try {
+      const r = await importer.helper("delete", { songIds: tracks.map((t) => t.id) });
+      const ids = new Set(tracks.map((t) => t.id));
+      document.querySelectorAll(".row[data-id]").forEach((row) => { if (ids.has(row.dataset.id)) row.remove(); });
+      toast(r.deleted ? `Deleted ${r.deleted === 1 ? "it" : `${r.deleted} songs`}` + (r.missing.length ? ` · couldn't find ${r.missing.length}` : "")
+                      : `Couldn't find the file${tracks.length === 1 ? "" : "s"} on the NAS`);
+      if (r.deleted && after) after();
+    } catch (err) { toast(err.message); }
   };
 }
 
@@ -1235,6 +1260,10 @@ const screens = {
           <small>${esc(meta)}</small></div>
         ${playButtons()}
         <div id="album-list" style="margin-top:14px">${tracks.map((t, i) => `${multi && (i === 0 || tracks[i - 1].disc !== t.disc) ? `<div class="disc">Disc ${t.disc || 1}</div>` : ""}${trackRow(t, i, false, t.track || i + 1)}`).join("")}</div></div>`;
+      view.querySelector(".album-wash").insertAdjacentHTML("beforeend",
+        `<div class="pill-row" style="margin:22px 0 8px"><button class="pill danger-pill" id="del-album">${icon("x")}Delete Album…</button></div>`);
+      $("#del-album").onclick = () => confirmDelete(tracks, `the album “${a.name}” (${tracks.length} song${tracks.length === 1 ? "" : "s"})`,
+        () => setTimeout(() => history.back(), 600));
       if (window.getMusic) getMusic.fillAlbum(id, tracks, a);
       palette(a.coverArt || a.id).then((p) => {
         const w = $(".album-wash");

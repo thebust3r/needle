@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.5.1"
+VERSION = "1.6"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -111,15 +111,38 @@ def title_score(want, got):
     return best
 
 
+NUMBERS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"]
+
+
+def spellings(name):
+    """'three 6 mafia' -> also '3 6 mafia' and 'three six mafia': people share it every which way."""
+    n = norm(name)
+    if not n:
+        return []
+    words = n.split()
+    if sum(1 for w in words if w in NUMBERS or (w.isdigit() and int(w) < len(NUMBERS))) < 2:
+        return [n]          # only names like 'three 6 mafia' (not 'twenty one pilots' or 'maroon 5')
+    digits = " ".join(str(NUMBERS.index(w)) if w in NUMBERS else w for w in words)
+    spelled = " ".join(NUMBERS[int(w)] if w.isdigit() and int(w) < len(NUMBERS) else w for w in words)
+    out = []
+    for x in (n, digits, spelled):
+        if x not in out:
+            out.append(x)
+    return out
+
+
 def artist_names(s):
-    """Every reasonable way an artist field can be split: 'A, B', 'A feat. B', 'A & B'."""
+    """Every reasonable way an artist field can be split ('A, B', 'A feat. B', 'A & B') and spelled ('3 6' / 'three six')."""
     whole = norm(s)
     out = {whole} if whole else set()
     for part in re.split(r",|;|/|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|&|\band\b|\bx\b|•", str(s or ""), flags=re.I):
         p = norm(part)
         if p:
             out.add(p)
-    return {re.sub(r"^the ", "", x) for x in out}
+    every = set()
+    for x in out:
+        every.update(spellings(x))
+    return {re.sub(r"^the ", "", x) for x in every}
 
 
 def artist_ok(wanted, song):
@@ -596,6 +619,8 @@ def slsk_queries(t):
         first = artist.split()[0] if artist else ""
         if len(first) >= 3:
             out.append((f"*{artist[1:]} {title}", False))
+        for sp in spellings(artist)[1:]:          # 'three 6 mafia' is also shared as '3 6 mafia' / 'three six mafia'
+            out.append((f"{sp} {title}", False))
     if title and (len(title) >= 6 or len(title.split()) >= 2 or not t["artists"]):
         out.append((title, True))
     seen, uniq = set(), []
@@ -881,6 +906,8 @@ def album_queries(title, artist):
         out.append(f"{a} {t}")
         if len(a.split()[0]) >= 3:
             out.append(f"*{a[1:]} {t}")
+        for sp in spellings(a)[1:]:
+            out.append(f"{sp} {t}")
     if len(t) >= 6 or len(t.split()) >= 2:
         out.append(t)
     seen, uniq = set(), []
@@ -1477,6 +1504,80 @@ def our_download(title, artists):
     return None
 
 
+# ------------------------------------------------------------------ deleting songs from the library
+
+def locate_file(song):
+    """The real file on the NAS for a library song: same size in bytes, same kind of file, title in the name."""
+    size = int(song.get("size") or 0)
+    suffix = (song.get("suffix") or "").lower()
+    p = song.get("path") or ""
+    if p:   # Navidrome may report the real path (relative to the music folder)
+        for cand in (os.path.join(MUSIC_DIR, p), p):
+            if os.path.isfile(cand) and (not size or os.path.getsize(cand) == size):
+                return cand
+    want = title_words(song.get("title") or "")
+    found = []
+    for root, _, files in os.walk(MUSIC_DIR):
+        for f in files:
+            base, ext = os.path.splitext(f)
+            if suffix and ext.lower().lstrip(".") != suffix:
+                continue
+            n = set(norm(strip_track_no(base)).split())
+            if want and words_match(want, n) > (1 if len(want) >= 4 else 0):
+                continue
+            full = os.path.join(root, f)
+            try:
+                if size and os.path.getsize(full) != size:
+                    continue
+            except OSError:
+                continue
+            found.append(full)
+    if len(found) > 1:      # identical copies: the one in a folder named for its album
+        alb = norm(song.get("album") or "")
+        named = [f for f in found if alb and alb in norm(os.path.basename(os.path.dirname(f)))]
+        found = named or found
+    return found[0] if found else None
+
+
+def delete_songs(creds, ids):
+    """Moves the songs' files out of the music folder (into helper-data/trash, so a mistake can be undone)."""
+    nav = Navidrome(creds)
+    trash = os.path.join(DATA_DIR, "trash", time.strftime("%Y-%m-%d"))
+    done, missing = [], []
+    for sid in ids[:500]:
+        try:
+            song = nav.call("getSong", [("id", sid)]).get("song") or {}
+        except RuntimeError:
+            missing.append(sid); continue
+        path = locate_file(song)
+        if not path or not os.path.abspath(path).startswith(os.path.abspath(MUSIC_DIR) + os.sep):
+            missing.append(song.get("title") or sid); continue
+        rel = os.path.relpath(path, MUSIC_DIR)
+        dest = os.path.join(trash, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        try:
+            shutil.move(path, dest)
+        except OSError as e:
+            missing.append(f"{song.get('title') or sid} ({e.strerror or e})"); continue
+        log("deleted from the library (moved to trash):", rel)
+        done.append(rel)
+        parent = os.path.dirname(path)      # tidy up empty album/artist folders
+        for _ in range(2):
+            try:
+                if os.path.abspath(parent) != os.path.abspath(MUSIC_DIR) and not [x for x in os.listdir(parent) if not x.startswith(".")]:
+                    for x in os.listdir(parent):
+                        os.remove(os.path.join(parent, x))
+                    os.rmdir(parent)
+                    parent = os.path.dirname(parent)
+                else:
+                    break
+            except OSError:
+                break
+    if done:
+        nav.scan()
+    return done, missing
+
+
 def downloads_job(creds):
     """Each person's running list of songs they asked for from Search (shown on the Download screen)."""
     with LOCK:
@@ -1736,6 +1837,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": str(e)})
             return self.send(200, {"job": public(job), "added": len(added), "album": bool(album),
                                    "lidarr": bool(album and not (SLSKD and SLSKD_KEY) and LIDARR and LIDARR_KEY)})
+        if path == "/delete" and method == "POST":
+            b = self.body()
+            ids = [str(x) for x in (b.get("songIds") or []) if x] if isinstance(b, dict) else []
+            if not ids:
+                return self.send(400, {"error": "Pick something to delete."})
+            done, missing = delete_songs(creds, ids)
+            return self.send(200, {"deleted": len(done), "missing": missing})
         if path == "/downloads" and method == "GET":
             job = downloads_job(creds)
             pj = public(job)

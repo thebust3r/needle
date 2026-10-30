@@ -36,7 +36,14 @@ struct AlbumView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if !tracks.isEmpty { downloadButton(tracks) }
-                    Menu { TrackMenu(tracks: tracks) } label: { Image(systemName: "ellipsis.circle") }
+                    Menu {
+                        TrackMenu(tracks: tracks)
+                        if !local.isEmpty {
+                            Button(role: .destructive) {
+                                Deleter.shared.ask(local, what: "The album “\(info.name)” (\(local.count) song\(local.count == 1 ? "" : "s"))")
+                            } label: { Label("Delete Album…", systemImage: "trash") }
+                        }
+                    } label: { Image(systemName: "ellipsis.circle") }
                 }
             }
             .task {

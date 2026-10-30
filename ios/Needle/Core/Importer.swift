@@ -223,6 +223,11 @@ struct HelperClient {
         return (try await send("get", method: "POST", body: body) as GetResult).added
     }
     func downloadQueue() async throws -> ImportJob { try await send("downloads") }
+    struct DeleteResult: Decodable { var deleted: Int; var missing: [String] }
+    /// Removes songs' files from the NAS (moved to helper-data/trash there, so it can be undone).
+    func delete(songIds: [String]) async throws -> DeleteResult {
+        try await send("delete", method: "POST", body: ["songIds": songIds])
+    }
     func clearFinished() async throws { _ = try await send("downloads/clear", method: "POST", body: [:]) as ImportJob }
 
     // the listening history shared by the app and the web (for Wrapped)

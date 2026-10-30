@@ -69,6 +69,7 @@ struct RootView: View {
         .fullScreenCover(isPresented: $showNowPlaying) { NowPlayingView().zoomDestination("nowplaying").environment(\.zoomNamespace, zoom) }
         .environment(\.zoomNamespace, zoom)
         .overlay(alignment: .top) { ErrorToast() }
+        .modifier(DeleteConfirm(enabled: !showNowPlaying))
         .sheet(item: Binding(get: { showNowPlaying ? nil : picker.request }, set: { picker.request = $0 })) { r in
             PlaylistPickerSheet(tracks: r.tracks)
         }
