@@ -136,6 +136,20 @@ struct AlbumView: View {
             }
         }
     }
+
+    @ViewBuilder
+    private func downloadButton(_ tracks: [Track]) -> some View {
+        let saved = tracks.filter { downloads.isSaved($0.id) }.count
+        let busy = tracks.contains { downloads.active.contains($0.id) }
+        if busy {
+            ProgressView(value: Double(saved), total: Double(tracks.count))
+                .progressViewStyle(.circular).tint(Theme.accent)
+        } else if saved == tracks.count {
+            Button { downloads.remove(tracks) } label: { Image(systemName: "arrow.down.circle.fill").foregroundStyle(Theme.accent) }
+        } else {
+            Button { downloads.save(tracks) } label: { Image(systemName: "arrow.down.circle") }
+        }
+    }
 }
 
 /// A row on an album screen: a song you have, one you don't (grayed out), or a little heading.
@@ -184,21 +198,6 @@ struct MissingSongRow: View {
         }
         .padding(.leading, 20).padding(.trailing, 12)
         .padding(.vertical, 7)
-    }
-}
-
-    @ViewBuilder
-    private func downloadButton(_ tracks: [Track]) -> some View {
-        let saved = tracks.filter { downloads.isSaved($0.id) }.count
-        let busy = tracks.contains { downloads.active.contains($0.id) }
-        if busy {
-            ProgressView(value: Double(saved), total: Double(tracks.count))
-                .progressViewStyle(.circular).tint(Theme.accent)
-        } else if saved == tracks.count {
-            Button { downloads.remove(tracks) } label: { Image(systemName: "arrow.down.circle.fill").foregroundStyle(Theme.accent) }
-        } else {
-            Button { downloads.save(tracks) } label: { Image(systemName: "arrow.down.circle") }
-        }
     }
 }
 
