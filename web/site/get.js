@@ -28,16 +28,21 @@ const getMusic = (() => {
     } catch (e) { toast(e.message); }
   }
 
-  async function get(tracks, btn) {
+  /** album: {title, artist} gets the whole album as one download (Lidarr) instead of song by song. */
+  async function get(tracks, btn, album) {
     if (btn) { btn.disabled = true; btn.classList.add("busy"); }
     try {
-      const r = await helper("get", { tracks: tracks.map((t) => ({ title: t.title, artists: t.artists, duration: t.duration, album: t.album, cover: t.cover })) });
-      toast(r.added ? (r.added > 1 ? `Downloading ${r.added} songs…` : "Downloading…") : "Already on the way");
+      const body = { tracks: tracks.map((t) => ({ title: t.title, artists: t.artists, duration: t.duration, album: t.album, cover: t.cover })) };
+      if (album) body.album = album;
+      const r = await helper("get", body);
+      toast(r.lidarr ? "Lidarr is getting the whole album" : r.added ? (r.added > 1 ? `Downloading ${r.added} songs…` : "Downloading…") : "Already on the way");
       if (btn) { btn.classList.remove("busy"); btn.classList.add("sent"); btn.innerHTML = icon("check"); }
       badge();
+      return true;
     } catch (e) {
       toast(e.message);
       if (btn) { btn.disabled = false; btn.classList.remove("busy"); }
+      return false;
     }
   }
 
@@ -92,14 +97,14 @@ const getMusic = (() => {
       view.innerHTML = `${backLink()}<div class="album-head">${a.cover ? `<img class="art" src="${esc(a.cover.replace("250x250", "500x500"))}" alt="" referrerpolicy="no-referrer">` : ""}
         <h1>${esc(a.title)}</h1><span class="by">${esc(a.artist)}</span><small>${[a.year, `${results.length} songs`].filter(Boolean).join(" · ")}</small></div>
         <div class="pill-row">${missing.length
-          ? `<button class="pill primary" id="get-all">${icon("download")}${missing.length === results.length ? "Download Album" : `Download ${missing.length} Missing`}</button>`
+          ? `<button class="pill primary" id="get-all">${icon("download")}Download Album</button>`
           : `<span class="pill" style="pointer-events:none">${icon("check")}All in your library</span>`}</div>
         <div id="get-list" style="margin-top:14px">${results.map(songRow).join("")}</div>`;
       wire($("#get-list"));
       const all = $("#get-all");
       if (all) all.onclick = async () => {
         all.disabled = true;
-        await get(missing);
+        if (!(await get(results, null, { title: a.title, artist: a.artist }))) { all.disabled = false; return; }
         $("#get-list").querySelectorAll("[data-get]").forEach((b) => { b.classList.add("sent"); b.innerHTML = icon("check"); b.disabled = true; });
         all.innerHTML = `${icon("check")}On the way`;
       };

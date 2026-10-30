@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.2.2"
+VERSION = "1.3"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -1131,8 +1131,36 @@ def downloads_job(creds):
         return job
 
 
-def queue_downloads(creds, items):
+def lidarr_find_album(title, artist):
+    """The MusicBrainz release group Lidarr knows for this album, or (None, None)."""
+    found = lidarr("album/lookup?" + urlencode({"term": f"{artist} {title}"})) or []
+    best, best_s = None, 0.0
+    for a in found:
+        name = (a.get("artist") or {}).get("artistName") or ""
+        if artist and not artist_ok([artist], {"artist": name}):
+            continue
+        sc = title_score(title, a.get("title", ""))
+        if (a.get("albumType") or "").lower() == "album":
+            sc += 0.02
+        if sc > best_s:
+            best, best_s = a, sc
+    if not best or best_s < 0.8:
+        return None, None
+    return best.get("foreignAlbumId"), best.get("title")
+
+
+def queue_downloads(creds, items, album=None):
+    """album={"title","artist"}: get the whole album in one go through Lidarr (one clean copy, one folder)
+    instead of song by song from different Soulseek users."""
     job = downloads_job(creds)
+    whole = None
+    if album and LIDARR and LIDARR_KEY:
+        rgid, name = lidarr_find_album(str(album.get("title") or ""), str(album.get("artist") or ""))
+        if not rgid:
+            raise RuntimeError("Lidarr couldn't find that album in its catalog, so it wasn't downloaded. "
+                               "(Downloading it song by song mixes copies from different people.)")
+        name = request_album(rgid) or name
+        whole = (rgid, name)
     nav = Navidrome(creds)
     added = []
     owned = {}
@@ -1158,8 +1186,11 @@ def queue_downloads(creds, items):
             busy.add(key)
             nxt += 1
             have = owned.get(k)
-            if have:
+            if have and not whole:
                 t.update(status="found", songId=have["id"], match=f'{have.get("artist", "")} - {have.get("title", "")}', note="Already in your library")
+            elif whole:
+                t.update(method="album", status="album", _album=whole[0], _since=time.time(), _next=time.time() + (0.5 if FAST else 30),
+                         note=f"Lidarr is getting the album {whole[1]}")
             elif SLSKD and SLSKD_KEY:
                 t.update(method="song", status="queued", _next=0)
             elif LIDARR and LIDARR_KEY:
@@ -1275,8 +1306,14 @@ class Handler(BaseHTTPRequestHandler):
             items = b.get("tracks") if isinstance(b, dict) else None
             if not isinstance(items, list) or not items:
                 return self.send(400, {"error": "Pick something to download."})
-            job, added = queue_downloads(creds, [x for x in items if isinstance(x, dict)])
-            return self.send(200, {"job": public(job), "added": len(added)})
+            album = b.get("album") if isinstance(b.get("album"), dict) else None
+            try:
+                job, added = queue_downloads(creds, [x for x in items if isinstance(x, dict)], album)
+            except HTTPError as e:
+                return self.send(502, {"error": f"Lidarr said no: {e.read().decode('utf-8', 'replace')[:200] or e.code}"})
+            except RuntimeError as e:
+                return self.send(400, {"error": str(e)})
+            return self.send(200, {"job": public(job), "added": len(added), "lidarr": bool(album and LIDARR and LIDARR_KEY)})
         if path == "/downloads" and method == "GET":
             job = downloads_job(creds)
             pj = public(job)

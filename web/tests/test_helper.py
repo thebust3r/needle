@@ -206,10 +206,20 @@ try:
     check("song you have is marked, not downloaded", by["Stressed Out"]["status"] == "found" and "Already" in by["Stressed Out"]["note"], by["Stressed Out"])
     check("blocked artist name found with a wildcard search", by["God's Plan"]["status"] == "found", by["God's Plan"])
     check("searched *rake", "*rake gods plan" in state()["slsk"], state()["slsk"][-5:])
+    code, r = call("/get", {"tracks": a["tracks"], "album": {"title": a["title"], "artist": a["artist"]}})
+    check("whole album goes to Lidarr in one request", code == 200 and r.get("lidarr"), r)
+    looks = [x for x in state()["lidarr"] if x[1] == "album/lookup"]
+    check("asked Lidarr for the right album", any(x[2].get("term") == "lidarr:rg-hurryup" for x in looks), looks[-3:])
+    code, d = call("/downloads")
+    wait = [t for t in d["tracks"] if t["title"] == "Wait"][0]
+    check("album songs wait on Lidarr, not Soulseek", wait["status"] == "album" and "Lidarr" in wait["note"], wait)
+    check("no Soulseek search for the album's songs", "m83 wait" not in state()["slsk"])
+    code, r = call("/get", {"tracks": [{"title": "X", "artists": ["Nobody"]}], "album": {"title": "Not Real", "artist": "Nobody"}})
+    check("album Lidarr doesn't know is refused, not split up", code == 400 and "Lidarr" in r.get("error", ""), r)
     code, jl = call("/jobs")
     check("downloads don't show up as an import", all(j.get("kind") != "downloads" for j in jl["jobs"]))
     code, d = call("/downloads/clear", {})
-    check("clear finished downloads", code == 200 and not d["tracks"], d)
+    check("clear finished downloads (keeps ones still going)", code == 200 and all(t["status"] in ("album", "queued", "searching", "downloading", "importing") for t in d["tracks"]), d)
     code, _ = call("/find?q=")
     check("empty search rejected", code == 400)
 

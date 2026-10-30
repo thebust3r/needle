@@ -187,9 +187,8 @@ struct CatalogAlbumView: View {
                 }
                 .padding(.horizontal, 20)
                 if !tracks.isEmpty {
-                    Button { getAll(missing) } label: {
-                        Label(missing.isEmpty ? "All in your library or on the way"
-                                : missing.count == tracks.count ? "Download Album" : "Download \(missing.count) Missing",
+                    Button { getAll(tracks) } label: {
+                        Label(missing.isEmpty ? "All in your library or on the way" : "Download Album",
                               systemImage: missing.isEmpty ? "checkmark" : "arrow.down.circle.fill")
                             .frame(maxWidth: .infinity)
                     }
@@ -217,8 +216,8 @@ struct CatalogAlbumView: View {
         let h = app.helper
         Task {
             do {
-                let n = try await h.get(songs)
-                player.errorMessage = "Downloading \(n) song\(n == 1 ? "" : "s")"
+                _ = try await h.get(songs, album: loader.value)
+                player.errorMessage = "Getting the whole album"
             } catch {
                 for s in songs { sent.remove(s.id) }
                 player.errorMessage = error.localizedDescription

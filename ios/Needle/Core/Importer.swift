@@ -192,11 +192,14 @@ struct HelperClient {
     func findAlbums(_ q: String) async throws -> [CatalogAlbum] { (try await send("find", query: ["q": q, "kind": "album"]) as AlbumHits).albums }
     func catalogAlbum(_ id: String) async throws -> CatalogAlbumDetail { try await send("find/album/\(id)") }
     /// Starts downloading these; returns how many were new (the rest were already on the way).
-    func get(_ songs: [CatalogSong]) async throws -> Int {
+    /// album: get the whole album as one download through Lidarr (one clean copy) instead of song by song.
+    func get(_ songs: [CatalogSong], album: CatalogAlbumDetail? = nil) async throws -> Int {
         let list: [[String: Any]] = songs.map { s -> [String: Any] in
             ["title": s.title, "artists": s.artists, "duration": s.duration ?? 0, "album": s.album ?? "", "cover": s.cover ?? ""]
         }
-        return (try await send("get", method: "POST", body: ["tracks": list]) as GetResult).added
+        var body: [String: Any] = ["tracks": list]
+        if let album { body["album"] = ["title": album.title, "artist": album.artist] }
+        return (try await send("get", method: "POST", body: body) as GetResult).added
     }
     func downloadQueue() async throws -> ImportJob { try await send("downloads") }
     func clearFinished() async throws { _ = try await send("downloads/clear", method: "POST", body: [:]) as ImportJob }

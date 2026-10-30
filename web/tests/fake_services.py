@@ -210,6 +210,12 @@ class H(BaseHTTPRequestHandler):
             one = {k: v[0] for k, v in q.items()}
             lidarr_log.append((method, r, one))
             if r == "album" and method == "GET": return self.j([a for a in lidarr_albums if a["foreignAlbumId"] == one.get("foreignAlbumId")])
+            if r == "album/lookup" and not one["term"].startswith("lidarr:"):
+                t = one["term"].lower()
+                if "m83" in t and "hurry" in t:
+                    return self.j([{"foreignAlbumId": "rg-m83-single", "title": "Midnight City", "albumType": "Single", "artist": {"artistName": "M83"}},
+                                   {"foreignAlbumId": "rg-hurryup", "title": "Hurry Up, We're Dreaming", "albumType": "Album", "artist": {"artistName": "M83"}}])
+                return self.j([])
             if r == "album/lookup":
                 rg = one["term"].replace("lidarr:", "")
                 return self.j([{"foreignAlbumId": rg, "title": "Bon Iver, Bon Iver", "artist": {"foreignArtistId": "a-boniver", "artistName": "Bon Iver"}}])
