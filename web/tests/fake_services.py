@@ -94,6 +94,16 @@ SLSK_FILES = {
 SLSK_FILES["*rake gods plan"] = [
     {"username": "dj", "hasFreeUploadSlot": True, "uploadSpeed": 2000000, "queueLength": 0,
      "files": [{"filename": "@@f\\Drake\\Scorpion\\05 - God's Plan.mp3", "size": 3500, "bitRate": 320, "length": 199}]}]
+SLSK_FILES["m83 hurry up were dreaming"] = [
+    {"username": "mixer", "hasFreeUploadSlot": True, "uploadSpeed": 9000000, "queueLength": 0,
+     "files": [{"filename": "@@g\\M83 - Hurry Up We're Dreaming\\03 Midnight City.mp3", "size": 300, "bitRate": 320, "length": 244}]},
+    {"username": "inst", "hasFreeUploadSlot": True, "uploadSpeed": 9000000, "queueLength": 0,
+     "files": [{"filename": "@@h\\M83\\Hurry Up We're Dreaming (Instrumentals)\\03 Midnight City.mp3", "size": 300, "length": 244},
+               {"filename": "@@h\\M83\\Hurry Up We're Dreaming (Instrumentals)\\05 Wait.mp3", "size": 300, "length": 343}]},
+    {"username": "albumguy", "hasFreeUploadSlot": True, "uploadSpeed": 2000000, "queueLength": 0,
+     "files": [{"filename": "@@i\\Music\\M83\\Hurry Up, We're Dreaming (2011)\\03 - Midnight City.flac", "size": 900, "length": 244},
+               {"filename": "@@i\\Music\\M83\\Hurry Up, We're Dreaming (2011)\\05 - Wait.flac", "size": 950, "length": 343},
+               {"filename": "@@i\\Music\\M83\\Hurry Up, We're Dreaming (2011)\\cover.jpg", "size": 10}]}]
 DEEZER_SONGS = [
     {"id": 1, "title": "Midnight City", "duration": 244, "artist": {"name": "M83"}, "album": {"id": 77, "title": "Hurry Up, We're Dreaming", "cover_medium": "http://x/c.jpg"}},
     {"id": 2, "title": "Stressed Out", "duration": 202, "artist": {"name": "Twenty One Pilots"}, "album": {"id": 78, "title": "Blurryface", "cover_medium": "http://x/b.jpg"}},

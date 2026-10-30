@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.3.3"
+VERSION = "1.4"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -868,6 +868,256 @@ def next_pick(t, now, why=None):
     t["_next"] = now + (0.5 if FAST else 4)
 
 
+
+# ------------------------------------------------------------------ whole albums from Soulseek (one person's folder)
+# A whole album comes from ONE person's folder, so every song is the same copy with the same tags
+# (song-by-song from different people makes Navidrome split it into several albums).
+
+def album_queries(title, artist):
+    t = squash_initials(clean_title(title))
+    a = re.sub(r"^the ", "", norm(artist))
+    out = []
+    if a:
+        out.append(f"{a} {t}")
+        if len(a.split()[0]) >= 3:
+            out.append(f"*{a[1:]} {t}")
+    if len(t) >= 6 or len(t.split()) >= 2:
+        out.append(t)
+    seen, uniq = set(), []
+    for q in out:
+        if q not in seen:
+            seen.add(q); uniq.append(q)
+    return uniq
+
+
+def pick_album_dirs(album, responses, limit=6):
+    """Folders (one user each) that hold this album: most of its songs, nothing else mixed in. Best first."""
+    titles = album["tracks"]
+    want_album = set(clean_title(album["title"]).split())
+    wanted_variants = variant_words(album["title"])
+    arts = artist_names(album["artist"]) if album.get("artist") else set()
+    dirs = {}
+    for r in responses or []:
+        for f in r.get("files") or []:
+            fn = f.get("filename", "")
+            ext = (f.get("extension") or fn.rsplit(".", 1)[-1]).lower().lstrip(".")
+            if ext not in AUDIO or f.get("isLocked"):
+                continue
+            path = fn.replace("\\", "/")
+            d = path.rsplit("/", 1)[0]
+            e = dirs.setdefault((r.get("username"), d), {"r": r, "files": [], "dir": d})
+            e["files"].append(dict(f, _ext=ext))
+    picks = []
+    for (user, d), e in dirs.items():
+        files = e["files"]
+        if len(files) > len(titles) + 8:          # a whole discography, not the album
+            continue
+        dn = norm(d)
+        if words_match(want_album, set(dn.split())) > (1 if len(want_album) >= 4 else 0):
+            continue                              # folder isn't named for this album
+        if variant_words(d.rsplit("/", 1)[-1]) - wanted_variants:
+            continue                              # instrumentals, slowed, live...
+        if arts and not any(f" {a} " in f" {dn} " for a in arts) and not any(
+                any(f" {a} " in " " + norm(f.get("filename", "")) + " " for a in arts) for f in files):
+            continue
+        names = [set(norm(strip_track_no(os.path.splitext(f["filename"].replace("\\", "/").rsplit("/", 1)[-1])[0])).split()) for f in files]
+        hit = 0
+        for t in titles:
+            w = set(clean_title(t).split())
+            if w and any(words_match(w, n) <= (1 if len(w) >= 4 else 0) for n in names):
+                hit += 1
+        cover = hit / max(1, len(titles))
+        if cover < 0.85:
+            continue
+        r = e["r"]
+        exts = [f["_ext"] for f in files]
+        lossless = sum(1 for x in exts if x in ("flac", "alac", "wav", "aiff")) / len(exts)
+        br = sum((f.get("bitRate") or 0) for f in files) / len(files)
+        q = 3 if lossless > 0.5 else 3 if br >= 300 else 2 if br >= 250 else 1
+        score = cover * 10 + q + (3 if r.get("hasFreeUploadSlot") else 0) + min(2, (r.get("uploadSpeed") or 0) / 1_000_000) \
+            - min(3, (r.get("queueLength") or 0) / 10)
+        picks.append((score, {"user": user, "dir": d, "cover": round(cover, 2),
+                              "files": [{"filename": f["filename"], "size": f.get("size", 0)} for f in files]}))
+    picks.sort(key=lambda p: -p[0])
+    out, users = [], set()
+    for _, p in picks:
+        if p["user"] in users:
+            continue
+        users.add(p["user"]); out.append(p)
+        if len(out) == limit:
+            break
+    return out
+
+
+def album_members(job, t):
+    return [x for x in job["tracks"] if x.get("_leader") == t["i"] or x is t]
+
+
+def step_salbum(job, t, now):
+    """The first song of an album request drives the album download; the others follow it."""
+    alb = t["_alb"]
+    st = t["status"]
+    if st == "queued":
+        with LOCK:
+            busy = sum(1 for j in list(JOBS.values()) for x in j["tracks"] if x["status"] == "searching" and j.get("kind") == "downloads")
+        if busy >= MAX_SEARCHING_PICKED:
+            t["_next"] = now + TICK
+            return
+        qs = album_queries(alb["title"], alb["artist"])
+        qi = t.get("_qi", 0)
+        if qi >= len(qs):
+            return album_failed(job, t, now, "No one on Soulseek is sharing the whole album right now.")
+        sid = str(uuid.uuid4())
+        slskd("searches", "POST", {"id": sid, "searchText": qs[qi], "searchTimeout": (3 if FAST else 30) * 1000, "filterResponses": True,
+                                     "responseLimit": 400, "fileLimit": 50000})
+        t.update(status="searching", _search=sid, _since=now, note=f"Looking for the whole album {alb['title']}")
+        set_members(job, t, note=f"Looking for the whole album {alb['title']}")
+        t["_next"] = now + (1 if FAST else 6)
+    elif st == "searching":
+        s = slskd(f"searches/{t['_search']}")
+        done = (s or {}).get("isComplete") or "Completed" in str((s or {}).get("state", ""))
+        responses = slskd(f"searches/{t['_search']}/responses") or []
+        picks = pick_album_dirs(alb, responses)
+        tried = {p["user"] + "|" + p["dir"] for p in t.get("_tried", [])}
+        picks = [p for p in picks if p["user"] + "|" + p["dir"] not in tried]
+        good_now = [p for p in picks if p["cover"] >= 0.99]
+        if not done and now - t["_since"] < (3 if FAST else 40) and len(good_now) < 2:
+            t["_next"] = now + (0.5 if FAST else 4)
+            return
+        try:
+            slskd(f"searches/{t['_search']}", "DELETE")
+        except Exception:
+            pass
+        if not picks:
+            t.update(status="queued", _qi=t.get("_qi", 0) + 1, note="Trying another search")
+            t["_next"] = now
+            return
+        t["_picks"], t["_try"] = picks, -1
+        album_next_pick(job, t, now)
+    elif st == "downloading":
+        p = t["_picks"][t["_try"]]
+        info = slskd(f"transfers/downloads/{quote(p['user'])}") or {}
+        mine = {f["filename"] for f in p["files"]}
+        states = {}
+        for d in info.get("directories") or []:
+            for x in d.get("files") or []:
+                if x.get("filename") in mine:
+                    states[x["filename"]] = x
+        ok = [fn for fn, x in states.items() if "Succeeded" in str(x.get("state", ""))]
+        bad = [fn for fn, x in states.items() if "Completed" in str(x.get("state", "")) and "Succeeded" not in str(x.get("state", ""))]
+        got = sum((x.get("bytesTransferred") or 0) for x in states.values())
+        total = sum(f.get("size") or 0 for f in p["files"]) or 1
+        pct = round(100 * got / total)
+        if got != t.get("_got"):
+            t["_moving"], t["_got"] = now, got
+        if bad:
+            cancel_album(p, states)
+            return album_next_pick(job, t, now, f"{p['user']}'s copy failed")
+        if len(ok) == len(mine):
+            return album_import(job, t, now, p)
+        queued = all("Queued" in str(x.get("state", "")) for x in states.values()) if states else True
+        note = f"Waiting in {p['user']}'s queue" if queued else f"Downloading the album from {p['user']} ({len(ok)}/{len(mine)} songs)"
+        t.update(progress=pct, note=note)
+        set_members(job, t, note=note, progress=pct)
+        more = t["_try"] + 1 < len(t["_picks"])
+        limit = (20 if FAST else 900) if not more else (20 if FAST else (600 if queued else 300))
+        if now - max(t["_since"], t.get("_moving", 0)) > limit:
+            cancel_album(p, states)
+            return album_next_pick(job, t, now, f"{p['user']} took too long")
+        t["_next"] = now + (0.5 if FAST else 5)
+
+
+def set_members(job, t, **kw):
+    for x in album_members(job, t):
+        if x is not t and x["status"] in ACTIVE:
+            x.update(**kw)
+
+
+def cancel_album(p, states):
+    for x in states.values():
+        if x.get("id") and "Completed" not in str(x.get("state", "")):
+            try:
+                slskd(f"transfers/downloads/{quote(p['user'])}/{x['id']}?remove=true", "DELETE")
+            except Exception:
+                pass
+
+
+def album_next_pick(job, t, now, why=None):
+    t["_try"] = t.get("_try", -1) + 1
+    picks = t.get("_picks") or []
+    if t["_try"] >= len(picks):
+        if why and t.get("_round", 0) < 1:
+            t.setdefault("_tried", []).extend(picks)
+            t.update(status="queued", _round=t.get("_round", 0) + 1, _qi=0, _picks=[], note="Looking for someone else with the album")
+            t["_next"] = now + (0.2 if FAST else 30)
+            return
+        return album_failed(job, t, now, f"{why}, and no one else had the whole album." if why else "No one had a complete copy.")
+    p = picks[t["_try"]]
+    slskd(f"transfers/downloads/{quote(p['user'])}", "POST", [{"filename": f["filename"], "size": f["size"]} for f in p["files"]])
+    t.update(status="downloading", _since=now, progress=0, note=f"Downloading the album from {p['user']}")
+    t.pop("_got", None)
+    set_members(job, t, status="downloading", note=f"Downloading the album from {p['user']}", progress=0)
+    t["_next"] = now + (0.5 if FAST else 4)
+
+
+def album_import(job, t, now, p):
+    alb = t["_alb"]
+    dest_dir = os.path.join(MUSIC_DIR, SONGS_FOLDER, safe_name(alb["artist"] or "Unknown Artist"), safe_name(alb["title"]))
+    os.makedirs(dest_dir, exist_ok=True)
+    moved, missing = [], []
+    for f in p["files"]:
+        src = find_download(f["filename"], f.get("size"))
+        if not src:
+            missing.append(f["filename"]); continue
+        dest = os.path.join(dest_dir, safe_name(os.path.basename(src)))
+        if os.path.exists(dest):
+            os.remove(src)
+        else:
+            shutil.move(src, dest)
+            try:
+                os.chmod(dest, 0o666)
+            except OSError:
+                pass
+        moved.append(os.path.relpath(dest, MUSIC_DIR))
+        parent = os.path.dirname(src)
+        try:
+            if os.path.abspath(parent) != os.path.abspath(DOWNLOADS_DIR) and not os.listdir(parent):
+                os.rmdir(parent)
+        except OSError:
+            pass
+    if missing and not moved:
+        if now - t.get("_done_since", now) > 120:
+            return album_failed(job, t, now, "slskd says it finished, but the files aren't in the downloads folder the helper can see.")
+        t.setdefault("_done_since", now)
+        t["_next"] = now + TICK * 2
+        return
+    log("album downloaded:", alb["artist"], "-", alb["title"], f"({len(moved)} files from {p['user']})")
+    Navidrome(job["creds"]).scan()
+    for x in album_members(job, t):
+        if x["status"] in ACTIVE or x is t:
+            x.update(method="song", status="importing", note="Adding to your library", _since=now, progress=100,
+                     file=os.path.relpath(dest_dir, MUSIC_DIR) + "/")
+            x["_next"] = now + (0.5 if FAST else 5)
+
+
+def album_failed(job, t, now, why):
+    for x in album_members(job, t):
+        if x["status"] in ACTIVE or x is t:
+            x.update(status="failed", note=why, method="song")
+            for k in ("_leader", "_alb"):
+                x.pop(k, None)
+
+
+def step_follow(job, t, now):
+    """A song waiting on its album: it moves along with the album's first song."""
+    lead = next((x for x in job["tracks"] if x["i"] == t.get("_leader")), None)
+    if not lead or lead["status"] not in ACTIVE:
+        if t["status"] in ACTIVE and (not lead or lead["status"] == "failed"):
+            t.update(status="failed", note=(lead or {}).get("note") or "The album download stopped.")
+        return
+    t["_next"] = now + (0.5 if FAST else 5)
+
+
 # ------------------------------------------------------------------ Lidarr (whole album)
 
 MB_LAST = [0.0]
@@ -991,7 +1241,8 @@ def work_once():
                     continue
                 before = (t["status"], t.get("note"), t.get("progress"))
                 try:
-                    (step_song if t.get("method") == "song" else step_album)(job, t, now)
+                    m = t.get("method")
+                    {"song": step_song, "salbum": step_salbum, "follow": step_follow}.get(m, step_album)(job, t, now)
                 except Exception as e:
                     what = "Lidarr" if t.get("method") == "album" else "slskd"
                     code = e.code if isinstance(e, HTTPError) else 0
@@ -1169,7 +1420,13 @@ def queue_downloads(creds, items, album=None):
     instead of song by song from different Soulseek users."""
     job = downloads_job(creds)
     whole = None
-    if album and LIDARR and LIDARR_KEY:
+    salb = None
+    if album and SLSKD and SLSKD_KEY:
+        # one person's complete folder from Soulseek: every song the same copy, in one album folder
+        salb = {"title": str(album.get("title") or "")[:200], "artist": str(album.get("artist") or "")[:120],
+                "tracks": [str(it.get("title") or "") for it in items if it.get("title")][:100]}
+        log("album request (Soulseek, one folder):", salb["artist"], "-", salb["title"], f"{len(salb['tracks'])} songs")
+    elif album and LIDARR and LIDARR_KEY:
         rgid, name = lidarr_find_album(str(album.get("title") or ""), str(album.get("artist") or ""))
         if not rgid:
             raise RuntimeError("Lidarr couldn't find that album in its catalog, so it wasn't downloaded. "
@@ -1187,8 +1444,8 @@ def queue_downloads(creds, items, album=None):
         except Exception:
             owned[k] = None
     with LOCK:
-        if whole:
-            # songs from this album already going song by song: hand them to Lidarr instead (one clean copy)
+        if whole or salb:
+            # songs from this album already going song by song: hand them to the album download instead (one clean copy)
             want = {(clean_title(str(it.get("title") or "")), norm(primary_artist({"artists": [str(a) for a in (it.get("artists") or []) if a]})))
                     for it in items}
             for t in job["tracks"]:
@@ -1206,8 +1463,8 @@ def queue_downloads(creds, items, album=None):
                             pass
                     for k in [k for k in t if k.startswith("_")]:
                         t.pop(k, None)
-                    t.update(method="album", status="album", _album=whole[0], _since=time.time(), _next=time.time() + (0.5 if FAST else 30),
-                             note=f"Lidarr is getting the album {whole[1]}", progress=None)
+                    t["status"] = "replaced"
+            job["tracks"] = [t for t in job["tracks"] if t["status"] != "replaced"]
         busy = {(clean_title(t["title"]), norm(primary_artist(t))) for t in job["tracks"] if t["status"] in ACTIVE}
         nxt = max([t["i"] for t in job["tracks"]] + [-1]) + 1
         for k, it in enumerate(items[:200]):
@@ -1223,7 +1480,14 @@ def queue_downloads(creds, items, album=None):
             busy.add(key)
             nxt += 1
             have = owned.get(k)
-            if have and not whole:
+            if salb:
+                lead = next((x for x in added if x.get("method") == "salbum"), None)
+                if lead is None:
+                    t.update(method="salbum", status="queued", _alb=salb, _next=0, note=f"Getting the whole album {salb['title']}")
+                else:
+                    t.update(method="follow", status="queued", _leader=lead["i"], _next=time.time() + 2,
+                             note=f"Part of the album {salb['title']}")
+            elif have and not whole:
                 t.update(status="found", songId=have["id"], match=f'{have.get("artist", "")} - {have.get("title", "")}', note="Already in your library")
             elif whole:
                 t.update(method="album", status="album", _album=whole[0], _since=time.time(), _next=time.time() + (0.5 if FAST else 30),
@@ -1353,16 +1617,16 @@ class Handler(BaseHTTPRequestHandler):
                     album = {"title": albums.pop(), "artist": primary_artist({"artists": [str(a) for a in (items[0].get("artists") or []) if a]})}
             if album:
                 log("album request:", album.get("artist"), "-", album.get("title"), "| Lidarr", "on" if LIDARR and LIDARR_KEY else "OFF")
-                if not (LIDARR and LIDARR_KEY) or "PASTE" in LIDARR_KEY:
-                    return self.send(400, {"error": "Whole albums download through Lidarr, and Lidarr isn't set up in the helper. "
-                                                    "Put Lidarr's API key (Lidarr > Settings > General) in the compose file's LIDARR_API_KEY."})
+                if not (SLSKD and SLSKD_KEY) and (not (LIDARR and LIDARR_KEY) or "PASTE" in LIDARR_KEY):
+                    return self.send(400, {"error": "Downloading isn't set up in the helper: add slskd's API key to the compose file."})
             try:
                 job, added = queue_downloads(creds, items, album)
             except HTTPError as e:
                 return self.send(502, {"error": f"Lidarr said no: {e.read().decode('utf-8', 'replace')[:200] or e.code}"})
             except RuntimeError as e:
                 return self.send(400, {"error": str(e)})
-            return self.send(200, {"job": public(job), "added": len(added), "lidarr": bool(album and LIDARR and LIDARR_KEY)})
+            return self.send(200, {"job": public(job), "added": len(added), "album": bool(album),
+                                   "lidarr": bool(album and not (SLSKD and SLSKD_KEY) and LIDARR and LIDARR_KEY)})
         if path == "/downloads" and method == "GET":
             job = downloads_job(creds)
             pj = public(job)

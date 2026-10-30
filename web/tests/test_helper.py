@@ -207,24 +207,34 @@ try:
     check("blocked artist name found with a wildcard search", by["God's Plan"]["status"] == "found", by["God's Plan"])
     check("searched *rake", "*rake gods plan" in state()["slsk"], state()["slsk"][-5:])
     code, r = call("/get", {"tracks": a["tracks"], "album": {"title": a["title"], "artist": a["artist"]}})
-    check("whole album goes to Lidarr in one request", code == 200 and r.get("lidarr"), r)
-    looks = [x for x in state()["lidarr"] if x[1] == "album/lookup"]
-    check("asked Lidarr for the right album", any(x[2].get("term") == "lidarr:rg-hurryup" for x in looks), looks[-3:])
-    code, d = call("/downloads")
-    wait = [t for t in d["tracks"] if t["title"] == "Wait"][0]
-    check("album songs wait on Lidarr, not Soulseek", wait["status"] == "album" and "Lidarr" in wait["note"], wait)
-    check("no Soulseek search for the album's songs", "m83 wait" not in state()["slsk"])
+    check("album request accepted", code == 200 and r.get("album"), r)
+    for _ in range(150):
+        code, d = call("/downloads")
+        alb = [t for t in d["tracks"] if t.get("album") == a["title"]]
+        if alb and all(t["status"] not in ("queued", "searching", "downloading", "importing", "album") for t in alb): break
+        time.sleep(0.2)
+    check("every album song added", alb and all(t["status"] == "found" for t in alb), alb)
+    folder = os.path.join(music, "Needle Downloads", "M83", "Hurry Up, We're Dreaming")
+    check("whole album from ONE person's folder, in its own album folder",
+          {"03 - Midnight City.flac", "05 - Wait.flac"} <= set(os.listdir(folder)) and not any(f.endswith(".mp3") or f.endswith(".jpg") for f in os.listdir(folder)) if os.path.isdir(folder) else False,
+          os.listdir(folder) if os.path.isdir(folder) else "no folder")
+    sl = state()["slsk"]
+    check("searched for the album, not song by song", "m83 hurry up were dreaming" in sl and "m83 wait" not in sl, sl[-4:])
     old_style = [dict(t, title=n) for t, n in zip(a["tracks"] * 2, ["Intro", "Reunion", "Outro"])]
-    n0 = len([x for x in state()["lidarr"] if x[1] == "album/lookup"])
     code, r = call("/get", {"tracks": old_style})
-    check("an album sent as a list of songs (old app) still goes to Lidarr", code == 200 and r.get("lidarr")
-          and len([x for x in state()["lidarr"] if x[1] == "album/lookup"]) > n0, r)
-    code, r = call("/get", {"tracks": [{"title": "X", "artists": ["Nobody"]}], "album": {"title": "Not Real", "artist": "Nobody"}})
-    check("album Lidarr doesn't know is refused, not split up", code == 400 and "Lidarr" in r.get("error", ""), r)
+    check("an album sent as a list of songs (old app) is still treated as an album", code == 200 and r.get("album"), r)
+    check("...and not searched song by song", "m83 intro" not in state()["slsk"])
+    code, r = call("/get", {"tracks": [{"title": "X", "artists": ["Nobody"], "album": "Not Real"}], "album": {"title": "Not Real", "artist": "Nobody"}})
+    for _ in range(150):
+        code, d = call("/downloads")
+        x = [t for t in d["tracks"] if t["title"] == "X"]
+        if x and x[0]["status"] == "failed": break
+        time.sleep(0.2)
+    check("album no one has says so (not split up)", x and x[0]["status"] == "failed" and "whole album" in x[0]["note"], x)
     code, jl = call("/jobs")
     check("downloads don't show up as an import", all(j.get("kind") != "downloads" for j in jl["jobs"]))
     code, d = call("/downloads/clear", {})
-    check("clear finished downloads (keeps ones still going)", code == 200 and all(t["status"] in ("album", "queued", "searching", "downloading", "importing") for t in d["tracks"]), d)
+    check("clear finished downloads (keeps ones still going)", code == 200 and all(t["status"] in ("album", "queued", "searching", "downloading", "importing") for t in d["tracks"]), [t["status"] for t in d["tracks"]])
     code, _ = call("/find?q=")
     check("empty search rejected", code == 400)
 

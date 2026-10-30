@@ -169,7 +169,7 @@ async def main():
         check("Downloads screen shows it finished", True)
         await pg.wait_for_function("document.querySelectorAll('#dl-list .dl-row').length >= 2 && !document.querySelector('#dl-list .spin')", timeout=40000)
         dl = await pg.inner_text("#dl-list")
-        check("a song no one has says so, with Try Again", await pg.locator("#dl-list [data-retry]").count() >= 1, dl[:300])
+        check("the whole album came in", "Wait" in dl and await pg.locator("#dl-list .dl-row.found", has_text="Wait").count() >= 1, dl[:300])
         await pg.wait_for_timeout(300)
         await pg.screenshot(path=os.path.join(SHOTS, "get-3-downloads.png"))
         await pg.goto(W + "#/library")

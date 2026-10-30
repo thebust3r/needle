@@ -35,7 +35,7 @@ const getMusic = (() => {
       const body = { tracks: tracks.map((t) => ({ title: t.title, artists: t.artists, duration: t.duration, album: t.album, cover: t.cover })) };
       if (album) body.album = album;
       const r = await helper("get", body);
-      toast(r.lidarr ? "Lidarr is getting the whole album" : r.added ? (r.added > 1 ? `Downloading ${r.added} songs…` : "Downloading…") : "Already on the way");
+      toast(r.album ? "Getting the whole album from one copy" : r.added ? (r.added > 1 ? `Downloading ${r.added} songs…` : "Downloading…") : "Already on the way");
       if (btn) { btn.classList.remove("busy"); btn.classList.add("sent"); btn.innerHTML = icon("check"); }
       badge();
       return true;
