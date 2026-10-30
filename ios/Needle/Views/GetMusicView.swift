@@ -250,7 +250,7 @@ struct DownloadQueueView: View {
                     CatalogArt(url: t.cover)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(t.title).lineLimit(1)
-                        Text(t.status == "failed" ? "\(t.artist) · \(t.note ?? "")" : t.artist)
+                        Text((t.status == "failed" || t.status == "queued") && t.note != nil ? "\(t.artist) · \(t.note ?? "")" : t.artist)
                             .font(.caption).foregroundStyle(Theme.secondary).lineLimit(2)
                         if t.status == "downloading" {
                             ProgressView(value: Double(t.progress ?? 0), total: 100).tint(Theme.accent)

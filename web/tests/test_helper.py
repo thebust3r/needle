@@ -57,6 +57,7 @@ fz = H.pick_files({"title": "Stay", "artists": ["Rihanna"], "duration": 240}, [
     {"username": "b", "files": [{"filename": "misc\\Stay.mp3", "length": 200}]}], title_only=True)
 check("...but not if it doesn't", not fz, fz)
 check("query order: artist, wildcard artist, title", [q for q, _ in H.slsk_queries({"title": "God's Plan", "artists": ["Drake"]})] == ["drake gods plan", "*rake gods plan", "gods plan"])
+check("initials searched as a word", H.slsk_queries({"title": "M.E.M.P.H.I.S.", "artists": ["Project Pat"]})[0][0] == "project pat memphis")
 check("short titles aren't searched alone", [q for q, _ in H.slsk_queries({"title": "Ride", "artists": ["Twenty One Pilots"]})] == ["twenty one pilots ride", "*wenty one pilots ride"])
 check("file picker skips remix, needs artist", len(picks) == 1 and picks[0]["filename"].endswith("M83\\Midnight City.mp3"), picks)
 

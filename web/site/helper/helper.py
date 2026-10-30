@@ -9,7 +9,7 @@ import difflib
 import hashlib
 import html
 import io
-import json
+import json, traceback
 import os
 import re
 import shutil
@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.2"
+VERSION = "1.2.1"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -41,7 +41,8 @@ PORT = int(E("PORT", "8790"))
 FAST = E("NEEDLE_FAST") == "1"          # tests: shorter waits
 TICK = 0.2 if FAST else 2.0
 SEARCH_WAIT = 3 if FAST else 25          # seconds to let a Soulseek search collect answers
-MAX_SEARCHING = 3                        # Soulseek searches at once
+MAX_SEARCHING = 3                        # Soulseek searches at once for playlist imports
+MAX_SEARCHING_PICKED = 2                 # plus this many for songs you picked in Search (so they never wait behind an import)
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 AUDIO = {"flac", "mp3", "m4a", "aac", "ogg", "opus", "wav", "alac", "aiff", "aif", "wma"}
 
@@ -579,10 +580,15 @@ def slsk_query(t, title_only=False):
     return f"{artist} {title}"
 
 
+def squash_initials(s):
+    """'m e m p h i s' (from M.E.M.P.H.I.S.) -> 'memphis': Soulseek ignores one-letter words."""
+    return re.sub(r"\b(?:[a-z0-9] ){2,}[a-z0-9]\b", lambda m: m.group(0).replace(" ", ""), s)
+
+
 def slsk_queries(t):
     """The searches to try, in order. Soulseek's server quietly drops searches for some big artists' names,
     so the second try hides the first letter ('*rake gods plan' still finds Drake), and the last is the title alone."""
-    title = clean_title(t["title"])
+    title = squash_initials(clean_title(t["title"]))
     out = []
     if t["artists"]:
         artist = re.sub(r"^the ", "", norm(primary_artist(t)))
@@ -715,8 +721,12 @@ def move_into_library(t, src):
 def step_song(job, t, now):
     st = t["status"]
     if st == "queued":
-        busy = sum(1 for j in JOBS.values() for x in j["tracks"] if x["status"] == "searching")
-        if busy >= MAX_SEARCHING:
+        picked = job.get("kind") == "downloads"
+        with LOCK:
+            busy = sum(1 for j in list(JOBS.values()) for x in j["tracks"]
+                       if x["status"] == "searching" and (j.get("kind") == "downloads") == picked)
+        if busy >= (MAX_SEARCHING_PICKED if picked else MAX_SEARCHING):
+            t["note"] = "Waiting for a free search slot"
             t["_next"] = now + TICK
             return
         qs = slsk_queries(t)
@@ -937,10 +947,19 @@ def step_album(job, t, now):
 def worker():
     while True:
         time.sleep(TICK)
+        try:
+            work_once()
+        except Exception as e:          # never let one bad entry stop all downloads
+            log("worker error:", repr(e), traceback.format_exc()[-800:])
+
+
+def work_once():
+    if True:
         now = time.time()
         changed = False
         with LOCK:
-            jobs = list(JOBS.values())
+            # songs you picked in Search go first, then playlist imports (oldest first)
+            jobs = sorted(JOBS.values(), key=lambda j: (j.get("kind") != "downloads", j.get("created", 0)))
         for job in jobs:
             for t in job.get("tracks", []):
                 if t["status"] not in ACTIVE or t.get("_next", 0) > now:
@@ -948,10 +967,35 @@ def worker():
                 before = (t["status"], t.get("note"), t.get("progress"))
                 try:
                     (step_song if t.get("method") == "song" else step_album)(job, t, now)
-                except (HTTPError, URLError, OSError, RuntimeError, ValueError) as e:
-                    t["_errors"] = t.get("_errors", 0) + 1
+                except Exception as e:
                     what = "Lidarr" if t.get("method") == "album" else "slskd"
-                    if isinstance(e, HTTPError) and e.code == 401:
+                    code = e.code if isinstance(e, HTTPError) else 0
+                    if code == 503 and what == "slskd":
+                        # slskd is up but not logged in to Soulseek: wait for it instead of giving up
+                        t["_offline"] = t.get("_offline", 0) + 1
+                        if t["_offline"] > (5 if FAST else 120):
+                            t.update(status="failed", note="slskd has been disconnected from Soulseek for an hour. Check it's logged in (open slskd's page).")
+                        else:
+                            if t["status"] == "searching":
+                                t["status"] = "queued"
+                            t.update(note="slskd isn't connected to Soulseek right now. Waiting for it to reconnect…")
+                            t["_next"] = now + (0.3 if FAST else 30)
+                        log("slskd offline (503) for", t["title"])
+                        if before != (t["status"], t.get("note"), t.get("progress")):
+                            touch(job); changed = True
+                        continue
+                    if code == 400 and t["status"] == "queued" and what == "slskd":
+                        # Soulseek didn't like that search (e.g. all one-letter words): try the next one
+                        nq = len(slsk_queries(t))
+                        if t.get("_qi", 0) + 1 < nq:
+                            t.update(_qi=t.get("_qi", 0) + 1)
+                            t["_next"] = now
+                        else:
+                            t.update(status="failed", note="Soulseek won't search for that name. Try Search > Download with different words.")
+                        touch(job); changed = True
+                        continue
+                    t["_errors"] = t.get("_errors", 0) + 1
+                    if code == 401:
                         t.update(status="failed", note=f"{what} rejected the API key in the compose file.")
                     elif t["_errors"] >= 5:
                         t.update(status="failed", note=f"Couldn't talk to {what}: {getattr(e, 'reason', e)}")

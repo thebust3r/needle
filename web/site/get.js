@@ -132,7 +132,7 @@ const getMusic = (() => {
         const busy = ACTIVE.includes(t.status);
         return `<div class="row dl-row ${t.status}" ${t.songId ? `data-song="${esc(t.songId)}"` : ""}>
           ${art(t.cover)}
-          <div class="meta"><b>${esc(t.title)}</b><span>${esc(who(t))}${t.status === "failed" && t.note ? ` · ${esc(t.note)}` : ""}</span>
+          <div class="meta"><b>${esc(t.title)}</b><span>${esc(who(t))}${(t.status === "failed" || t.status === "queued") && t.note ? ` · ${esc(t.note)}` : ""}</span>
             ${t.status === "downloading" ? `<i class="dl-bar"><i style="width:${t.progress || 0}%"></i></i>` : ""}</div>
           <span class="dl-state">${busy ? '<span class="spin"></span>' : ""}${esc(label(t))}</span>
           ${t.status === "failed" ? `<button class="get-btn" data-retry="${t.i}" aria-label="Try again">${icon("repeat")}</button>` : ""}
