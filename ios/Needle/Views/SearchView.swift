@@ -9,6 +9,8 @@ struct SearchView: View {
     @State private var result = SubsonicResponse.SearchResult()
     @State private var searching = false
     @State private var error: String?
+    @AppStorage("searchMode") private var mode = "library"     // "library" or "get" (download new music)
+    @AppStorage("getKind") private var kind = "song"
 
     private var localHits: [Track] {
         guard !query.isEmpty else { return [] }
@@ -21,6 +23,10 @@ struct SearchView: View {
     var body: some View {
         let songs = (result.song ?? []).map(Track.init(song:)) + localHits
         ScrollView {
+            if mode == "get" {
+                GetMusicResults(query: query.trimmingCharacters(in: .whitespaces), kind: kind)
+                    .padding(.bottom, 24)
+            } else {
             VStack(alignment: .leading, spacing: 22) {
                 if query.isEmpty {
                     StatusView(icon: "magnifyingglass", title: "Find anything",
@@ -72,18 +78,23 @@ struct SearchView: View {
                 }
             }
             .padding(.bottom, 24)
+            }
         }
+        .scrollDismissesKeyboard(.immediately)
         .background(Theme.background)
         .toolbar(.hidden, for: .navigationBar)
         .safeAreaInset(edge: .top) {
             VStack(spacing: 4) {
                 ScreenTitle(text: "Search")
+                modePicker
                 searchField
+                if mode == "get" { kindPicker }
             }
             .background(Theme.background)
         }
         .withDestinations()
         .task(id: query) {
+            guard mode == "library" else { return }
             guard !query.isEmpty else { result = .init(); return }
             try? await Task.sleep(for: .milliseconds(300))      // wait until typing pauses
             guard !Task.isCancelled, settings.config.isComplete else { return }
@@ -99,10 +110,60 @@ struct SearchView: View {
         }
     }
 
+    private var modePicker: some View {
+        HStack(spacing: 8) {
+            chip("Your Library", icon: nil, on: mode == "library") { mode = "library" }
+            chip("Download", icon: "arrow.down.circle", on: mode == "get") { mode = "get" }
+            Spacer()
+            if mode == "get" {
+                NavigationLink(value: ListRoute.getQueue) {
+                    Label("Queue", systemImage: "icloud.and.arrow.down").font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(Theme.accent)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+        .sensoryFeedback(.selection, trigger: mode)
+        .onChange(of: mode) { _, m in if m == "library" { result = .init(); Task { await searchLibraryAgain() } } }
+    }
+
+    private var kindPicker: some View {
+        HStack(spacing: 8) {
+            chip("Songs", icon: nil, on: kind == "song") { kind = "song" }
+            chip("Albums", icon: nil, on: kind == "album") { kind = "album" }
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 4)
+    }
+
+    private func chip(_ title: String, icon: String?, on: Bool, _ tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            HStack(spacing: 5) {
+                if let icon { Image(systemName: icon) }
+                Text(title)
+            }
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(on ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(Color.white.opacity(0.1)), in: Capsule())
+            .foregroundStyle(on ? Color.black : Color.white)
+        }
+        .buttonStyle(PressScale())
+    }
+
+    private func searchLibraryAgain() async {
+        guard !query.isEmpty, settings.config.isComplete else { return }
+        searching = true
+        defer { searching = false }
+        result = (try? await app.client.search(query)) ?? .init()
+    }
+
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundStyle(Theme.tertiary)
-            TextField("Songs, albums, artists", text: $query)
+            TextField(mode == "get" ? (kind == "album" ? "Album or artist to download" : "Song to download (add the artist)") : "Songs, albums, artists",
+                      text: $query)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)

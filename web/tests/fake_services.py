@@ -90,6 +90,14 @@ SLSK_FILES = {
         {"username": "remixer", "hasFreeUploadSlot": True, "uploadSpeed": 1000000, "queueLength": 0,
          "files": [{"filename": "@@e\\Nobody Known\\Obscure Song (Club Remix).mp3", "size": 100, "length": 300}]}],
 }
+SLSK_FILES["*rake gods plan"] = [
+    {"username": "dj", "hasFreeUploadSlot": True, "uploadSpeed": 2000000, "queueLength": 0,
+     "files": [{"filename": "@@f\\Drake\\Scorpion\\05 - God's Plan.mp3", "size": 3500, "bitRate": 320, "length": 199}]}]
+DEEZER_SONGS = [
+    {"id": 1, "title": "Midnight City", "duration": 244, "artist": {"name": "M83"}, "album": {"id": 77, "title": "Hurry Up, We're Dreaming", "cover_medium": "http://x/c.jpg"}},
+    {"id": 2, "title": "Stressed Out", "duration": 202, "artist": {"name": "Twenty One Pilots"}, "album": {"id": 78, "title": "Blurryface", "cover_medium": "http://x/b.jpg"}},
+    {"id": 3, "title": "God's Plan", "duration": 199, "artist": {"name": "Drake"}, "album": {"id": 79, "title": "Scorpion", "cover_medium": "http://x/s.jpg"}},
+]
 searches, transfers = {}, {}
 slsk_log = []
 
@@ -213,6 +221,21 @@ class H(BaseHTTPRequestHandler):
                 return self.j(a, 201)
             if r in ("album/monitor", "command"): return self.j({}, 202)
             return self.j({"error": "?"}, 404)
+        # Deezer catalog
+        if p == "/deezer/search":
+            text = q.get("q", [""])[0].lower()
+            hits = [x for x in DEEZER_SONGS if any(w in (x["title"] + " " + x["artist"]["name"]).lower() for w in text.split())]
+            return self.j({"data": hits, "total": len(hits)})
+        if p == "/deezer/search/album":
+            text = q.get("q", [""])[0].lower()
+            return self.j({"data": [{"id": 77, "title": "Hurry Up, We're Dreaming", "artist": {"name": "M83"}, "nb_tracks": 2,
+                                     "cover_medium": "http://x/c.jpg", "record_type": "album"}] if "hurry" in text or "m83" in text else []})
+        if p == "/deezer/album/77":
+            return self.j({"id": 77, "title": "Hurry Up, We're Dreaming", "artist": {"name": "M83"}, "release_date": "2011-10-18", "cover_medium": "http://x/c.jpg",
+                           "tracks": {"data": [{"title": "Midnight City", "duration": 244, "artist": {"name": "M83"}},
+                                               {"title": "Wait", "duration": 343, "artist": {"name": "M83"}}]}})
+        if p.startswith("/deezer/album/"):
+            return self.j({"error": {"type": "DataException", "message": "no data"}})
         # MusicBrainz
         if p == "/ws/2/recording":
             query = one = q.get("query", [""])[0].lower()

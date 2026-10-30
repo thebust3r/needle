@@ -44,6 +44,20 @@ picks = H.pick_files({"title": "Midnight City", "artists": ["M83"], "duration": 
     {"username": "a", "hasFreeUploadSlot": True, "files": [{"filename": "x\\M83\\Midnight City (Remix).mp3", "length": 244},
                                                          {"filename": "x\\M83\\Midnight City.mp3", "bitRate": 320, "length": 244},
                                                          {"filename": "x\\Other\\Midnight City.mp3", "bitRate": 320, "length": 244}]}])
+fz = H.pick_files({"title": "Weird Fishes / Arpeggi", "artists": ["Radiohead"], "duration": 318}, [
+    {"username": "b", "files": [{"filename": "Radiohead\\In Rainbows\\04 Weird Fishes Arpegi.mp3", "bitRate": 320, "length": 318}]}])
+check("one misspelled word is fine", len(fz) == 1, fz)
+fz = H.pick_files({"title": "Running Up That Hill (A Deal with God)", "artists": ["Kate Bush"], "duration": 300}, [
+    {"username": "b", "files": [{"filename": "Kate Bush\\Hounds of Love\\01 Running Up That Hill.flac", "length": 299}]}])
+check("words in brackets aren't required", len(fz) == 1, fz)
+fz = H.pick_files({"title": "Stay", "artists": ["Rihanna"], "duration": 240}, [
+    {"username": "b", "files": [{"filename": "misc\\Stay.mp3", "length": 241}]}], title_only=True)
+check("title-only search: no artist in path OK if the length matches", len(fz) == 1, fz)
+fz = H.pick_files({"title": "Stay", "artists": ["Rihanna"], "duration": 240}, [
+    {"username": "b", "files": [{"filename": "misc\\Stay.mp3", "length": 200}]}], title_only=True)
+check("...but not if it doesn't", not fz, fz)
+check("query order: artist, wildcard artist, title", [q for q, _ in H.slsk_queries({"title": "God's Plan", "artists": ["Drake"]})] == ["drake gods plan", "*rake gods plan", "gods plan"])
+check("short titles aren't searched alone", [q for q, _ in H.slsk_queries({"title": "Ride", "artists": ["Twenty One Pilots"]})] == ["twenty one pilots ride", "*wenty one pilots ride"])
 check("file picker skips remix, needs artist", len(picks) == 1 and picks[0]["filename"].endswith("M83\\Midnight City.mp3"), picks)
 
 # ---------------------------------------------------------------- live run
@@ -53,7 +67,7 @@ for d in (music, downloads, data): os.makedirs(d)
 FP, HP = 18871, 18872
 fake = subprocess.Popen([sys.executable, os.path.join(HERE, "fake_services.py"), str(FP), music, downloads])
 base = f"http://127.0.0.1:{FP}"
-env = dict(os.environ, NAVIDROME_URL=base, SPOTIFY_URL=base, MUSICBRAINZ_URL=base, SLSKD_URL=base + "/slskd", SLSKD_API_KEY="slsk-key",
+env = dict(os.environ, NAVIDROME_URL=base, SPOTIFY_URL=base, MUSICBRAINZ_URL=base, DEEZER_URL=base + "/deezer", SLSKD_URL=base + "/slskd", SLSKD_API_KEY="slsk-key",
            LIDARR_URL=base + "/lidarr", LIDARR_API_KEY="lid-key", MUSIC_DIR=music, DOWNLOADS_DIR=downloads, DATA_DIR=data,
            PORT=str(HP), NEEDLE_FAST="1")
 run_dir = os.path.join(tmp, "app"); os.makedirs(run_dir)
@@ -165,6 +179,38 @@ try:
     check("single-song link explained", j6["state"] == "error" and "one song" in j6["error"])
     code, _ = call("/import", {"source": ""})
     check("empty rejected", code == 400)
+
+    print("Search and download")
+    code, r = call("/find?q=midnight")
+    hits = r.get("songs", [])
+    check("search finds songs with album and cover", code == 200 and hits and hits[0]["title"] == "Midnight City" and hits[0]["album"] and hits[0]["cover"], r)
+    check("says which ones you already have", hits[0].get("songId"), hits[0])
+    code, r = call("/find?q=hurry&kind=album")
+    check("search finds albums", code == 200 and r["albums"][0]["id"] == "dz77", r)
+    code, a = call("/find/album/dz77")
+    check("album lists its songs, marking what you have", code == 200 and [t["title"] for t in a["tracks"]] == ["Midnight City", "Wait"]
+          and a["tracks"][0].get("songId") and not a["tracks"][1].get("songId"), a)
+    code, _ = call("/find/album/dz999")
+    check("unknown album is a 404", code == 404)
+    code, r = call("/get", {"tracks": [{"title": "God's Plan", "artists": ["Drake"], "duration": 199, "album": "Scorpion"},
+                                       {"title": "Stressed Out", "artists": ["Twenty One Pilots"], "duration": 202}]})
+    check("download request accepted", code == 200 and r["added"] == 2, r)
+    code, r2 = call("/get", {"tracks": [{"title": "God's Plan", "artists": ["Drake"], "duration": 199}]})
+    check("asking twice doesn't download twice", r2["added"] == 0, r2)
+    for _ in range(150):
+        code, d = call("/downloads")
+        if not d["active"]: break
+        time.sleep(0.2)
+    by = {t["title"]: t for t in d["tracks"]}
+    check("song you have is marked, not downloaded", by["Stressed Out"]["status"] == "found" and "Already" in by["Stressed Out"]["note"], by["Stressed Out"])
+    check("blocked artist name found with a wildcard search", by["God's Plan"]["status"] == "found", by["God's Plan"])
+    check("searched *rake", "*rake gods plan" in state()["slsk"], state()["slsk"][-5:])
+    code, jl = call("/jobs")
+    check("downloads don't show up as an import", all(j.get("kind") != "downloads" for j in jl["jobs"]))
+    code, d = call("/downloads/clear", {})
+    check("clear finished downloads", code == 200 and not d["tracks"], d)
+    code, _ = call("/find?q=")
+    check("empty search rejected", code == 400)
 
     print("Restarts and updates")
     proc.send_signal(signal.SIGTERM); proc.wait(5)

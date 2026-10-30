@@ -21,7 +21,7 @@ def spawn(args, env=None):
     p = subprocess.Popen(args, env=dict(os.environ, **(env or {})), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); procs.append(p); return p
 base = f"http://127.0.0.1:{FS}"
 spawn([sys.executable, os.path.join(HERE, "fake_services.py"), str(FS), music, downloads])
-spawn([sys.executable, "-u", os.path.join(SITE, "helper", "helper.py")], dict(NAVIDROME_URL=base, SPOTIFY_URL=base, MUSICBRAINZ_URL=base,
+spawn([sys.executable, "-u", os.path.join(SITE, "helper", "helper.py")], dict(NAVIDROME_URL=base, SPOTIFY_URL=base, MUSICBRAINZ_URL=base, DEEZER_URL=base + "/deezer",
       SLSKD_URL=base + "/slskd", SLSKD_API_KEY="slsk-key", LIDARR_URL=base + "/lidarr", LIDARR_API_KEY="lid-key", MUSIC_DIR=music,
       DOWNLOADS_DIR=downloads, DATA_DIR=data, PORT=str(HP), NEEDLE_FAST="1"))
 spawn([sys.executable, os.path.join(HERE, "fake_server.py"), SITE], dict(PORT=str(WEB), HELPER_URL=f"http://127.0.0.1:{HP}", REST_FORWARD=base))
@@ -132,6 +132,49 @@ async def main():
         await pg2.click("#imp-go")
         await pg2.wait_for_timeout(500)
         check("import button shows the same hint", "isn't running" in await pg2.inner_text("#imp-err"))
+
+        # search and download
+        await pg.goto(W + "#/search")
+        await pg.wait_for_selector("[data-mode='get']")
+        await pg.click("[data-mode='get']")
+        check("Download mode shows Songs / Albums", await pg.is_visible(".get-kinds"))
+        await pg.fill("#q", "gods plan drake")
+        await pg.wait_for_selector("#results .get-row")
+        txt = await pg.inner_text("#results")
+        check("lists songs from the catalog", "God's Plan" in txt and "Scorpion" in txt, txt[:200])
+        await pg.wait_for_timeout(300)
+        await pg.screenshot(path=os.path.join(SHOTS, "get-1-songs.png"))
+        row = pg.locator("#results .get-row", has_text="God's Plan")
+        await row.locator("[data-get]").click()
+        await pg.wait_for_selector("#results .get-row:has-text(\"God's Plan\") .get-btn.sent")
+        check("download button turns into a check", True)
+        await pg.wait_for_function("(document.querySelector('#dl-badge')||{}).textContent !== undefined")
+        await pg.fill("#q", "stressed")
+        await pg.wait_for_selector("#results .get-row .get-btn.have")
+        check("songs you have show a check instead", "Stressed Out" in await pg.inner_text("#results"))
+        await pg.click("[data-kind='album']")
+        await pg.fill("#q", "hurry up")
+        await pg.wait_for_selector("#results a.get-row")
+        await pg.click("#results a.get-row")
+        await pg.wait_for_selector("#get-all")
+        check("album page lists its songs", "Wait" in await pg.inner_text("#get-list"))
+        await pg.wait_for_timeout(300)
+        await pg.screenshot(path=os.path.join(SHOTS, "get-2-album.png"))
+        await pg.click("#get-all")
+        await pg.wait_for_function("document.querySelector('#get-all').textContent.includes('On the way')")
+        check("Download Album sends the missing songs", True)
+        await pg.goto(W + "#/downloads")
+        await pg.wait_for_selector("#dl-list .dl-row")
+        await pg.wait_for_function("[...document.querySelectorAll('#dl-list .dl-row')].some(r => r.textContent.includes(\"God's Plan\") && r.classList.contains('found'))", timeout=30000)
+        check("Downloads screen shows it finished", True)
+        await pg.wait_for_function("document.querySelectorAll('#dl-list .dl-row').length >= 2 && !document.querySelector('#dl-list .spin')", timeout=40000)
+        dl = await pg.inner_text("#dl-list")
+        check("a song no one has says so, with Try Again", await pg.locator("#dl-list [data-retry]").count() >= 1, dl[:300])
+        await pg.wait_for_timeout(300)
+        await pg.screenshot(path=os.path.join(SHOTS, "get-3-downloads.png"))
+        await pg.goto(W + "#/library")
+        await pg.wait_for_selector("a.nav-row[href='#/downloads']")
+        check("Library links to Downloads", True)
 
         # wide screen
         await pg.set_viewport_size({"width": 1280, "height": 900})

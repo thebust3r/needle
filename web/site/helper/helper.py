@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.1"
+VERSION = "1.2"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -32,6 +32,7 @@ LIDARR = E("LIDARR_URL", "").rstrip("/")
 LIDARR_KEY = E("LIDARR_API_KEY", "")
 SPOTIFY = E("SPOTIFY_URL", "https://open.spotify.com").rstrip("/")
 MUSICBRAINZ = E("MUSICBRAINZ_URL", "https://musicbrainz.org").rstrip("/")
+DEEZER = E("DEEZER_URL", "https://api.deezer.com").rstrip("/")     # free catalog search (no account needed)
 MUSIC_DIR = E("MUSIC_DIR", "/music")
 DOWNLOADS_DIR = E("DOWNLOADS_DIR", "/downloads")
 DATA_DIR = E("DATA_DIR", "/app/helper-data")
@@ -244,8 +245,16 @@ def find_in_library(nav, t):
     queries = [title]
     if t["artists"]:
         queries.append(norm(t["artists"][0]) + " " + title)
-    if t.get("file"):
-        queries.append(strip_track_no(norm(os.path.splitext(os.path.basename(t["file"]))[0])))
+    fname = os.path.basename(t["file"]) if t.get("file") else ""
+    if fname:
+        queries.append(strip_track_no(norm(os.path.splitext(fname)[0])))
+    # library search can treat punctuation differently ("God's" vs "Gods"): also try it as written, and its longest word
+    raw = re.sub(r"\s+", " ", re.sub(r"\(.*?\)|\[.*?\]", "", str(t["title"]))).strip()
+    if raw and raw.lower() != title:
+        queries.append(raw)
+    longest = max(title.split(), key=len)
+    if len(longest) >= 4 and longest != title:
+        queries.append(longest)
     best, best_s = None, 0.0
     for q in queries:
         try:
@@ -254,8 +263,13 @@ def find_in_library(nav, t):
             raise RuntimeError(f"Couldn't search your library: {e}")
         for s in songs:
             sc = song_score(t, s)
-            if t.get("file") and str(s.get("path", "")).replace("\\", "/").endswith(os.path.basename(t["file"])):
+            if fname and str(s.get("path", "")).replace("\\", "/").endswith(fname):
                 sc = max(sc, 1.0)
+            elif fname and title_score(t["title"], s.get("title", "")) >= 0.8 and \
+                    norm(os.path.splitext(fname)[0]).find(clean_title(s.get("title", ""))) >= 0 and \
+                    (not t.get("duration") or not s.get("duration") or abs(t["duration"] - s["duration"]) <= 12):
+                # we just downloaded this file: its tags may spell the artist differently than Spotify does
+                sc = max(sc, 0.9)
             if sc > best_s:
                 best, best_s = s, sc
         if best_s >= 0.97:
@@ -484,6 +498,8 @@ def touch(job):
 
 
 def rebuild_playlist(job):
+    if job.get("kind") == "downloads":
+        return
     nav = Navidrome(job["creds"])
     ids = [t["songId"] for t in job["tracks"] if t.get("songId")]
     job["playlistId"] = nav.save_playlist(job.get("playlistId"), job["name"], ids)
@@ -563,8 +579,42 @@ def slsk_query(t, title_only=False):
     return f"{artist} {title}"
 
 
-def pick_files(t, responses):
+def slsk_queries(t):
+    """The searches to try, in order. Soulseek's server quietly drops searches for some big artists' names,
+    so the second try hides the first letter ('*rake gods plan' still finds Drake), and the last is the title alone."""
+    title = clean_title(t["title"])
+    out = []
+    if t["artists"]:
+        artist = re.sub(r"^the ", "", norm(primary_artist(t)))
+        out.append((f"{artist} {title}", False))
+        first = artist.split()[0] if artist else ""
+        if len(first) >= 3:
+            out.append((f"*{artist[1:]} {title}", False))
+    if title and (len(title) >= 6 or len(title.split()) >= 2 or not t["artists"]):
+        out.append((title, True))
+    seen, uniq = set(), []
+    for q, only in out:
+        if q not in seen:
+            seen.add(q); uniq.append((q, only))
+    return uniq
+
+
+def words_match(want, have):
+    """How many of the title's words are in the file name (a word counts if it's spelled nearly the same)."""
+    missing = 0
+    for w in want:
+        if w in have:
+            continue
+        if len(w) >= 4 and any(len(h) >= 4 and difflib.SequenceMatcher(None, w, h).ratio() >= 0.84 for h in have):
+            continue
+        missing += 1
+    return missing
+
+
+def pick_files(t, responses, title_only=False, limit=8):
     want = set(clean_title(t["title"]).split())
+    if not want:
+        return []
     wanted_variants = variant_words(t["title"])
     arts = set()
     for a in t["artists"]:
@@ -580,16 +630,20 @@ def pick_files(t, responses):
             path = fn.replace("\\", "/")
             base = os.path.splitext(path.rsplit("/", 1)[-1])[0]
             bn = norm(base)
-            if not want <= set(bn.split()):
+            missing = words_match(want, set(bn.split()))
+            if missing > (1 if len(want) >= 4 else 0):
                 continue
             if variant_words(base) - wanted_variants:
                 continue
-            if t.get("duration") and f.get("length") and abs(f["length"] - t["duration"]) > 10:
+            off = abs(f["length"] - t["duration"]) if t.get("duration") and f.get("length") else None
+            if off is not None and off > 12:
                 continue
             fullp = " " + norm(path) + " "
             has_artist = any(f" {a} " in fullp for a in arts) if arts else False
-            if arts and not has_artist and not t.get("_title_only_ok"):
-                continue
+            if arts and not has_artist:
+                # a title-only search can still find it if the length matches to the second
+                if not (title_only and off is not None and off <= 3):
+                    continue
             extra = len(bn.split()) - len(want)
             score = 0.0
             br = f.get("bitRate") or 0
@@ -599,6 +653,8 @@ def pick_files(t, responses):
             score -= min(3, (r.get("queueLength") or 0) / 10)
             score += 1 if has_artist else 0
             score -= min(2, max(0, extra - 3) * 0.3)
+            score -= 1.5 * missing
+            score += 1 if off is not None and off <= 2 else 0
             picks.append((score, {"user": user, "filename": fn, "size": f.get("size", 0)}))
     picks.sort(key=lambda p: -p[0])
     out, users = [], set()
@@ -607,7 +663,7 @@ def pick_files(t, responses):
             continue
         users.add(p["user"])
         out.append(p)
-        if len(out) == 4:
+        if len(out) == limit:
             break
     return out
 
@@ -663,7 +719,13 @@ def step_song(job, t, now):
         if busy >= MAX_SEARCHING:
             t["_next"] = now + TICK
             return
-        q = slsk_query(t, t.get("_title_only_ok", False))
+        qs = slsk_queries(t)
+        qi = min(t.get("_qi", 0), len(qs) - 1) if qs else 0
+        if not qs:
+            t.update(status="failed", note="That song's name doesn't have anything to search for")
+            return
+        q = qs[qi][0]
+        t["_title_only_ok"] = qs[qi][1]
         sid = str(uuid.uuid4())
         slskd("searches", "POST", {"id": sid, "searchText": q, "searchTimeout": SEARCH_WAIT * 1000, "filterResponses": True,
                                      "responseLimit": 200, "fileLimit": 20000})
@@ -680,13 +742,18 @@ def step_song(job, t, now):
             slskd(f"searches/{t['_search']}", "DELETE")
         except Exception:
             pass
-        picks = pick_files(t, responses)
-        if not picks and not t.get("_title_only_ok") and t["artists"] and len(clean_title(t["title"])) >= 8:
-            t.update(status="queued", _title_only_ok=True, note="Trying another search")
+        picks = pick_files(t, responses, t.get("_title_only_ok", False))
+        tried = {p["user"] + "|" + p["filename"] for p in t.get("_tried", [])}
+        picks = [p for p in picks if p["user"] + "|" + p["filename"] not in tried]
+        if not picks and t.get("_qi", 0) + 1 < len(slsk_queries(t)):
+            t.update(status="queued", _qi=t.get("_qi", 0) + 1, note="Trying another search")
             t["_next"] = now
             return
         if not picks:
-            t.update(status="failed", note="No one on Soulseek is sharing it right now (or Soulseek blocks this artist's name)")
+            if t.get("_tried"):
+                t.update(status="failed", note="Everyone who had it failed or was too slow. Try again later.")
+            else:
+                t.update(status="failed", note="No one on Soulseek is sharing it right now (or Soulseek blocks this artist's name)")
             return
         t["_picks"] = picks
         t["_try"] = -1
@@ -720,9 +787,12 @@ def step_song(job, t, now):
             if f:
                 t["progress"] = round(f.get("percentComplete") or 0)
                 t["note"] = "Waiting in their queue" if "Queued" in state else "Downloading"
-                if "InProgress" in state:
-                    t["_moving"] = now
-            if now - max(t["_since"], t.get("_moving", 0)) > (20 if FAST else 900):
+                got = f.get("bytesTransferred") or f.get("percentComplete") or 0
+                if "InProgress" in state and got != t.get("_got"):
+                    t["_moving"], t["_got"] = now, got
+            more = t["_try"] + 1 < len(t.get("_picks") or [])
+            limit = (20 if FAST else 900) if not more else (20 if FAST else (300 if "Queued" in state or not f else 180))
+            if now - max(t["_since"], t.get("_moving", 0)) > limit:
                 try:
                     slskd(f"transfers/downloads/{quote(p['user'])}/{f['id']}?remove=true", "DELETE") if f and f.get("id") else None
                 except Exception:
@@ -737,8 +807,9 @@ def step_song(job, t, now):
             rebuild_playlist(job)
             return
         if now - t["_since"] > (6 if FAST else 3600):
+            later = "" if job.get("kind") == "downloads" else "; import the playlist again to slot it in"
             t.update(status="failed", note=f"Downloaded to Music/{t.get('file', '')}, but Navidrome hasn't added it yet. "
-                                           "It'll show up after the next library scan; import the playlist again to slot it in.")
+                                           f"It'll show up after the next library scan{later}.")
             return
         t["_next"] = now + (0.5 if FAST else 20)
 
@@ -747,6 +818,12 @@ def next_pick(t, now, why=None):
     t["_try"] = t.get("_try", -1) + 1
     picks = t.get("_picks") or []
     if t["_try"] >= len(picks):
+        if why and t.get("_round", 0) < 1:
+            # everyone we tried failed: search again (other people come online), skipping who we already tried
+            t.setdefault("_tried", []).extend(picks)
+            t.update(status="queued", _round=t.get("_round", 0) + 1, _qi=0, _picks=[], note="Looking for someone else who has it")
+            t["_next"] = now + (0.2 if FAST else 30)
+            return
         t.update(status="failed", note=f"{why}, and no one else had it. Try again later." if why else "No one had a copy that worked. Try again later.")
         return
     p = picks[t["_try"]]
@@ -910,6 +987,143 @@ def watch_self():
 
 # ------------------------------------------------------------------ web API
 
+# ------------------------------------------------------------------ search the music catalog and download from it
+
+def deezer(path):
+    return http(f"{DEEZER}/{path}", timeout=15) or {}
+
+
+def catalog_songs(q, n=25):
+    out = []
+    try:
+        for x in (deezer("search?" + urlencode({"q": q, "limit": n})).get("data") or []):
+            out.append({"title": x.get("title") or "", "artists": [(x.get("artist") or {}).get("name") or ""],
+                        "album": (x.get("album") or {}).get("title") or "", "duration": int(x.get("duration") or 0),
+                        "cover": (x.get("album") or {}).get("cover_medium") or "", "albumId": f"dz{(x.get('album') or {}).get('id', '')}",
+                        "explicit": bool(x.get("explicit_lyrics"))})
+    except (HTTPError, URLError, OSError, ValueError) as e:
+        log("deezer search failed:", repr(e))
+    if out:
+        seen, uniq = set(), []
+        for x in out:      # the same song often comes back twice (clean + explicit, or a re-release)
+            key = (clean_title(x["title"]), norm(x["artists"][0] if x["artists"] else ""))
+            if key not in seen:
+                seen.add(key); uniq.append(x)
+        return uniq
+    # fall back to MusicBrainz (slower, no covers)
+    data = musicbrainz("recording?" + urlencode({"query": q, "fmt": "json", "limit": n})) or {}
+    seen = set()
+    for rec in data.get("recordings") or []:
+        artist = " & ".join(c.get("name", "") for c in rec.get("artist-credit") or [] if isinstance(c, dict)) or ""
+        rel = (rec.get("releases") or [{}])[0]
+        key = (norm(rec.get("title")), norm(artist))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"title": rec.get("title") or "", "artists": [artist] if artist else [], "album": rel.get("title") or "",
+                    "duration": round((rec.get("length") or 0) / 1000), "cover": "", "albumId": ""})
+    return out
+
+
+def catalog_albums(q, n=20):
+    out = []
+    try:
+        for x in (deezer("search/album?" + urlencode({"q": q, "limit": n})).get("data") or []):
+            out.append({"id": f"dz{x.get('id')}", "title": x.get("title") or "", "artist": (x.get("artist") or {}).get("name") or "",
+                        "cover": x.get("cover_medium") or "", "tracks": x.get("nb_tracks") or 0, "type": x.get("record_type") or "album"})
+    except (HTTPError, URLError, OSError, ValueError) as e:
+        log("deezer album search failed:", repr(e))
+    return out
+
+
+def catalog_album(aid):
+    if not re.fullmatch(r"dz\d+", aid or ""):
+        raise ValueError("unknown album")
+    a = deezer("album/" + aid[2:])
+    if not a or a.get("error"):
+        raise ValueError("That album isn't in the catalog")
+    artist = (a.get("artist") or {}).get("name") or ""
+    tracks = []
+    for x in ((a.get("tracks") or {}).get("data") or []):
+        tracks.append({"title": x.get("title") or "", "artists": [(x.get("artist") or {}).get("name") or artist],
+                       "album": a.get("title") or "", "duration": int(x.get("duration") or 0), "cover": a.get("cover_medium") or ""})
+    return {"id": aid, "title": a.get("title") or "", "artist": artist, "cover": a.get("cover_medium") or "",
+            "year": str(a.get("release_date") or "")[:4], "tracks": tracks}
+
+
+def mark_library(nav, items):
+    """Adds songId to the results you already have, so the list can say 'In your library'."""
+    for it in items:
+        try:
+            s = find_in_library(nav, it)
+        except Exception:
+            s = None
+        if s:
+            it["songId"] = s["id"]
+    return items
+
+
+def downloads_job(creds):
+    """Each person's running list of songs they asked for from Search (shown on the Download screen)."""
+    with LOCK:
+        for j in JOBS.values():
+            if j.get("kind") == "downloads" and j["creds"]["u"] == creds["u"]:
+                j["creds"] = creds
+                return j
+        jid = uuid.uuid4().hex[:10]
+        job = {"id": jid, "kind": "downloads", "created": time.time(), "updated": time.time(), "state": "ready", "name": "Downloads",
+               "source": "", "tracks": [], "creds": creds, "progress": {"done": 0, "total": 0}}
+        JOBS[jid] = job
+        return job
+
+
+def queue_downloads(creds, items):
+    job = downloads_job(creds)
+    nav = Navidrome(creds)
+    added = []
+    owned = {}
+    for k, it in enumerate(items[:200]):     # look these up before locking: it's a few library searches each
+        try:
+            owned[k] = find_in_library(nav, {"title": str(it.get("title") or ""), "artists": [str(a) for a in (it.get("artists") or []) if a],
+                                             "duration": int(it.get("duration") or 0)}) if it.get("title") else None
+        except Exception:
+            owned[k] = None
+    with LOCK:
+        busy = {(clean_title(t["title"]), norm(primary_artist(t))) for t in job["tracks"] if t["status"] in ACTIVE}
+        nxt = max([t["i"] for t in job["tracks"]] + [-1]) + 1
+        for k, it in enumerate(items[:200]):
+            title = str(it.get("title") or "").strip()[:200]
+            arts = [str(a)[:120] for a in (it.get("artists") or []) if a][:6]
+            if not title:
+                continue
+            t = {"i": nxt, "title": title, "artists": arts, "duration": int(it.get("duration") or 0),
+                 "album": str(it.get("album") or "")[:200], "cover": str(it.get("cover") or "")[:400], "added": time.time()}
+            key = (clean_title(title), norm(primary_artist(t)))
+            if key in busy:
+                continue
+            busy.add(key)
+            nxt += 1
+            have = owned.get(k)
+            if have:
+                t.update(status="found", songId=have["id"], match=f'{have.get("artist", "")} - {have.get("title", "")}', note="Already in your library")
+            elif SLSKD and SLSKD_KEY:
+                t.update(method="song", status="queued", _next=0)
+            elif LIDARR and LIDARR_KEY:
+                t.update(method="album", status="requesting", _next=0)
+            else:
+                t.update(status="failed", note="Downloading isn't set up in the helper (add slskd or Lidarr to the compose file).")
+            job["tracks"].append(t)
+            added.append(t)
+        # keep the list from growing forever: drop old finished ones
+        done = [t for t in job["tracks"] if t["status"] not in ACTIVE]
+        if len(job["tracks"]) > 300:
+            drop = {id(t) for t in sorted(done, key=lambda t: t.get("added", 0))[:len(job["tracks"]) - 300]}
+            job["tracks"] = [t for t in job["tracks"] if id(t) not in drop]
+        touch(job)
+    save_jobs()
+    return job, added
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "NeedleHelper/" + VERSION
 
@@ -953,10 +1167,10 @@ class Handler(BaseHTTPRequestHandler):
         if not creds:
             return self.send(401, {"error": "Sign in with your Navidrome account."})
         if path == "/status" and method == "GET":
-            return self.send(200, {"ok": True, "version": VERSION, "soulseek": bool(SLSKD and SLSKD_KEY), "lidarr": bool(LIDARR and LIDARR_KEY)})
+            return self.send(200, {"ok": True, "version": VERSION, "soulseek": bool(SLSKD and SLSKD_KEY), "lidarr": bool(LIDARR and LIDARR_KEY), "find": True})
         if path == "/jobs" and method == "GET":
             with LOCK:
-                mine = [public(j) for j in JOBS.values() if j["creds"]["u"] == creds["u"]]
+                mine = [public(j) for j in JOBS.values() if j["creds"]["u"] == creds["u"] and j.get("kind") != "downloads"]
             mine.sort(key=lambda j: -j["created"])
             for j in mine:
                 j.pop("tracks")
@@ -971,7 +1185,7 @@ class Handler(BaseHTTPRequestHandler):
                    "source": src[:300], "tracks": [], "creds": creds, "progress": {"done": 0, "total": 0}}
             with LOCK:
                 JOBS[jid] = job
-                for old in sorted(JOBS.values(), key=lambda j: j["created"])[:-40]:
+                for old in sorted([j for j in JOBS.values() if j.get("kind") != "downloads"], key=lambda j: j["created"])[:-40]:
                     JOBS.pop(old["id"], None)
             threading.Thread(target=run_import, args=(jid, src, job["name"]), daemon=True).start()
             return self.send(200, public(job))
@@ -985,6 +1199,42 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(plays, list):
                 return self.send(400, {"error": "Send {plays: [...]}"})
             return self.send(200, {"ok": True, "changed": merge_history(creds["u"], plays[:2000])})
+        if path == "/find" and method == "GET":
+            text = ((q.get("q") or [""])[0] or "").strip()[:200]
+            kind = (q.get("kind") or ["song"])[0]
+            if not text:
+                return self.send(400, {"error": "Type a song, artist or album."})
+            nav = Navidrome(creds)
+            if kind == "album":
+                return self.send(200, {"albums": catalog_albums(text)})
+            return self.send(200, {"songs": mark_library(nav, catalog_songs(text)[:25])})
+        mm = re.fullmatch(r"/find/album/(dz\d+)", path)
+        if mm and method == "GET":
+            try:
+                a = catalog_album(mm.group(1))
+            except ValueError as e:
+                return self.send(404, {"error": str(e)})
+            mark_library(Navidrome(creds), a["tracks"])
+            return self.send(200, a)
+        if path == "/get" and method == "POST":
+            b = self.body()
+            items = b.get("tracks") if isinstance(b, dict) else None
+            if not isinstance(items, list) or not items:
+                return self.send(400, {"error": "Pick something to download."})
+            job, added = queue_downloads(creds, [x for x in items if isinstance(x, dict)])
+            return self.send(200, {"job": public(job), "added": len(added)})
+        if path == "/downloads" and method == "GET":
+            job = downloads_job(creds)
+            pj = public(job)
+            pj["tracks"].sort(key=lambda t: -t.get("added", 0))
+            return self.send(200, pj)
+        if path == "/downloads/clear" and method == "POST":
+            job = downloads_job(creds)
+            with LOCK:
+                job["tracks"] = [t for t in job["tracks"] if t["status"] in ACTIVE]
+                touch(job)
+            save_jobs()
+            return self.send(200, public(job))
         m = re.fullmatch(r"/jobs/([0-9a-f]+)(/download|/rematch)?", path)
         if m:
             with LOCK:

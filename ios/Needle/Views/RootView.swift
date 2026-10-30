@@ -30,6 +30,7 @@ struct RootView: View {
     @State private var showNowPlaying = false
     @State private var paths: [AppTab: NavigationPath] = [:]
     @State private var nav = Navigator.shared
+    @State private var picker = PlaylistPicker.shared
     @Namespace private var zoom
 
     var body: some View {
@@ -68,6 +69,9 @@ struct RootView: View {
         .fullScreenCover(isPresented: $showNowPlaying) { NowPlayingView().zoomDestination("nowplaying").environment(\.zoomNamespace, zoom) }
         .environment(\.zoomNamespace, zoom)
         .overlay(alignment: .top) { ErrorToast() }
+        .sheet(item: Binding(get: { showNowPlaying ? nil : picker.request }, set: { picker.request = $0 })) { r in
+            PlaylistPickerSheet(tracks: r.tracks)
+        }
         .onChange(of: nav.token) { _, _ in
             guard let route = nav.request else { return }
             // close Now Playing, then open the page in the tab you're on (Settings has no pages: use Home)

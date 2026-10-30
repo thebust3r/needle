@@ -41,6 +41,39 @@ struct ImportJob: Decodable, Identifiable, Equatable {
     }
 }
 
+/// A song from the music catalog (not in your library yet, unless songId is set).
+struct CatalogSong: Decodable, Identifiable, Hashable {
+    var title: String
+    var artists: [String]
+    var album: String?
+    var duration: Int?
+    var cover: String?
+    var songId: String?
+    var id: String { "\(title)|\(artists.joined(separator: ","))|\(album ?? "")" }
+    var artist: String { artists.joined(separator: ", ") }
+}
+
+struct CatalogAlbum: Decodable, Identifiable, Hashable {
+    let id: String
+    var title: String
+    var artist: String
+    var cover: String?
+    var tracks: Int?
+    var type: String?
+    var kind: String {
+        switch type { case "single": return "Single"; case "ep": return "EP"; default: return "Album" }
+    }
+}
+
+struct CatalogAlbumDetail: Decodable {
+    let id: String
+    var title: String
+    var artist: String
+    var cover: String?
+    var year: String?
+    var tracks: [CatalogSong]
+}
+
 struct ImportTrack: Decodable, Identifiable, Equatable {
     static let activeStates = ["queued", "searching", "downloading", "importing", "requesting", "album"]
     let i: Int
@@ -49,6 +82,8 @@ struct ImportTrack: Decodable, Identifiable, Equatable {
     var status: String
     var note: String?
     var progress: Int?
+    var cover: String?
+    var songId: String?
     var id: Int { i }
 
     var isActive: Bool { Self.activeStates.contains(status) }
@@ -105,16 +140,17 @@ struct HelperClient {
         return URL(string: s)
     }
 
-    func url(_ path: String) -> URL? {
+    func url(_ path: String, query: [String: String] = [:]) -> URL? {
         guard let base = Self.baseURL(address: address, config: config),
               var comps = URLComponents(url: base.appendingPathComponent("helper/" + path), resolvingAgainstBaseURL: false)
         else { return nil }
-        comps.queryItems = SubsonicClient(config: config).authItems()
+        comps.queryItems = SubsonicClient(config: config).authItems() + query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
         return comps.url
     }
 
-    private func send<T: Decodable>(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> T {
-        guard config.isComplete, let url = url(path) else { throw HelperProblem.noAddress }
+    private func send<T: Decodable>(_ path: String, method: String = "GET", body: [String: Any]? = nil,
+                                    query: [String: String] = [:]) async throws -> T {
+        guard config.isComplete, let url = url(path, query: query) else { throw HelperProblem.noAddress }
         var req = SubsonicClient(config: config).request(for: url)
         req.httpMethod = method
         if let body {
@@ -147,6 +183,23 @@ struct HelperClient {
         try await send("jobs/\(id)/download", method: "POST", body: ["method": method, "indexes": indexes])
     }
     func remove(_ id: String) async throws { _ = try await send("jobs/\(id)", method: "DELETE") as OK }
+
+    // finding new music and downloading it to the NAS
+    struct SongHits: Decodable { var songs: [CatalogSong] }
+    struct AlbumHits: Decodable { var albums: [CatalogAlbum] }
+    struct GetResult: Decodable { var added: Int }
+    func findSongs(_ q: String) async throws -> [CatalogSong] { (try await send("find", query: ["q": q]) as SongHits).songs }
+    func findAlbums(_ q: String) async throws -> [CatalogAlbum] { (try await send("find", query: ["q": q, "kind": "album"]) as AlbumHits).albums }
+    func catalogAlbum(_ id: String) async throws -> CatalogAlbumDetail { try await send("find/album/\(id)") }
+    /// Starts downloading these; returns how many were new (the rest were already on the way).
+    func get(_ songs: [CatalogSong]) async throws -> Int {
+        let list: [[String: Any]] = songs.map { s -> [String: Any] in
+            ["title": s.title, "artists": s.artists, "duration": s.duration ?? 0, "album": s.album ?? "", "cover": s.cover ?? ""]
+        }
+        return (try await send("get", method: "POST", body: ["tracks": list]) as GetResult).added
+    }
+    func downloadQueue() async throws -> ImportJob { try await send("downloads") }
+    func clearFinished() async throws { _ = try await send("downloads/clear", method: "POST", body: [:]) as ImportJob }
 
     // the listening history shared by the app and the web (for Wrapped)
     struct Plays: Decodable { var plays: [SharedPlay] }

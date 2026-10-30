@@ -78,6 +78,9 @@ struct NowPlayingView: View {
                 .presentationDetents([.height(640), .large])
                 .presentationBackground(.ultraThinMaterial)
         }
+        .sheet(item: Binding(get: { PlaylistPicker.shared.request }, set: { PlaylistPicker.shared.request = $0 })) { r in
+            PlaylistPickerSheet(tracks: r.tracks)
+        }
         .sheet(isPresented: $showQueue) {
             QueueView()
                 .presentationDetents([.medium, .large])

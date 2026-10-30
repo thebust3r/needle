@@ -10,7 +10,7 @@ const importer = (() => {
   async function helper(path, body, method) {
     let r;
     try {
-      r = await fetch(`helper/${path}?${auth()}`, {
+      r = await fetch(`helper/${path}${path.includes("?") ? "&" : "?"}${auth()}`, {
         method: method || (body ? "POST" : "GET"),
         headers: body ? { "Content-Type": "application/json" } : {},
         body: body ? JSON.stringify(body) : undefined,

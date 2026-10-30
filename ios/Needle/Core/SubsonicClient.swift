@@ -136,16 +136,33 @@ struct SubsonicClient {
         try await call("getArtistInfo2", ["id": id, "count": "12", "includeNotPresent": "false"]).artistInfo2
     }
 
-    /// Saves songs as a new playlist on the server.
-    func createPlaylist(name: String, songIds: [String]) async throws {
-        guard config.isComplete, let base = url("createPlaylist", ["name": name]),
+    /// A call where one parameter repeats (songId=1&songId=2…).
+    private func call(_ endpoint: String, _ params: [String: String], repeating key: String, _ values: [String]) async throws {
+        guard config.isComplete, let base = url(endpoint, params),
               var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else { throw ServerProblem.notConfigured }
-        comps.queryItems = (comps.queryItems ?? []) + songIds.map { URLQueryItem(name: "songId", value: $0) }
+        comps.queryItems = (comps.queryItems ?? []) + values.map { URLQueryItem(name: key, value: $0) }
         guard let url = comps.url else { throw ServerProblem.notConfigured }
         let (data, response) = try await session.data(for: request(for: url))
         try Self.check(response)
         let env = try? JSONDecoder().decode(SubsonicEnvelope.self, from: data)
-        if let r = env?.response, r.status != "ok" { throw ServerProblem.server(r.error?.message ?? "Couldn't save the playlist.") }
+        if let r = env?.response, r.status != "ok" { throw ServerProblem.server(r.error?.message ?? "Couldn't change the playlist.") }
+    }
+
+    /// Saves songs as a new playlist on the server.
+    func createPlaylist(name: String, songIds: [String]) async throws {
+        try await call("createPlaylist", ["name": name], repeating: "songId", songIds)
+    }
+
+    func addToPlaylist(_ id: String, songIds: [String]) async throws {
+        try await call("updatePlaylist", ["playlistId": id], repeating: "songIdToAdd", songIds)
+    }
+
+    func removeFromPlaylist(_ id: String, index: Int) async throws {
+        try await call("updatePlaylist", ["playlistId": id], repeating: "songIndexToRemove", [String(index)])
+    }
+
+    func song(_ id: String) async throws -> Song? {
+        try await call("getSong", ["id": id]).song
     }
 
     func randomSongs(_ count: Int = 50) async throws -> [Song] {

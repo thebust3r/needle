@@ -124,6 +124,7 @@ struct SubsonicResponse: Decodable {
     var songsByGenre: SongList?
     var genres: GenreList?
     var artistInfo2: ArtistInfo?
+    var song: Song?
 }
 
 // MARK: - Something the player can play: a server song or a file on this iPhone
@@ -147,6 +148,8 @@ struct Track: Identifiable, Codable, Hashable {
     var disc: Int?
     var starred = false
     var source: Source
+    /// Added with Play Next / Add to Queue: these sit together right after the playing song ("Next in Queue").
+    var queued: Bool? = nil
 
     var isLocal: Bool { if case .local = source { return true } else { return false } }
 

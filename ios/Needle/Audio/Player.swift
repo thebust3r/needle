@@ -134,17 +134,39 @@ final class Player {
         startCurrent(autoplay: true)
     }
 
+    /// How many songs you queued sit right after the playing one, ahead of the rest of the album or playlist.
+    var queuedCount: Int {
+        var n = 0
+        while queue[safe: index + 1 + n]?.queued == true { n += 1 }
+        return n
+    }
+
+    private func marked(_ tracks: [Track]) -> [Track] {
+        tracks.map { t in
+            var x = t
+            x.queued = true
+            return x
+        }
+    }
+
+    /// Plays these right after the current song (before anything else you queued).
     func playNext(_ tracks: [Track]) {
         guard !queue.isEmpty else { return play(tracks) }
-        queue.insert(contentsOf: tracks, at: index + 1)
-        originalQueue.append(contentsOf: tracks)
+        queue.insert(contentsOf: marked(tracks), at: index + 1)
         refreshPreload()
     }
 
+    /// Adds these to the end of "Next in Queue": after what you already queued, before the rest of the album or playlist.
     func addToQueue(_ tracks: [Track]) {
         guard !queue.isEmpty else { return play(tracks) }
-        queue.append(contentsOf: tracks)
-        originalQueue.append(contentsOf: tracks)
+        queue.insert(contentsOf: marked(tracks), at: index + 1 + queuedCount)
+        refreshPreload()
+    }
+
+    func clearQueued() {
+        let n = queuedCount
+        guard n > 0 else { return }
+        queue.removeSubrange((index + 1)...(index + n))
         refreshPreload()
     }
 
@@ -279,14 +301,26 @@ final class Player {
 
     func toggleShuffle() {
         guard let cur = current else { shuffled.toggle(); return }
+        let n = queuedCount
+        let queuedSongs = Array(queue[(index + 1)..<(index + 1 + n)])
         if shuffled {
-            queue = originalQueue
-            index = originalQueue.firstIndex(of: cur) ?? 0
+            // back to the album/playlist order, with what you queued still right after this song
+            var base = originalQueue
+            if let at = base.firstIndex(of: cur) {
+                base.replaceSubrange(at...at, with: [cur] + queuedSongs)
+                index = at
+            } else {
+                base.insert(contentsOf: [cur] + queuedSongs, at: 0)
+                index = 0
+            }
+            queue = base
         } else {
-            originalQueue = queue
-            var rest = queue
-            rest.remove(at: index)
-            queue = [cur] + rest.shuffled()
+            originalQueue = queue.filter { $0.queued != true }
+            var rest: [Track] = []
+            for (k, t) in queue.enumerated() where k > index + n || (k < index && t.queued != true) {
+                rest.append(t)
+            }
+            queue = [cur] + queuedSongs + rest.shuffled()
             index = 0
         }
         shuffled.toggle()
@@ -304,11 +338,25 @@ final class Player {
     }
 
     func setStarred(_ on: Bool) {
-        guard queue.indices.contains(index), !queue[index].isLocal else { return }
-        queue[index].starred = on
+        guard let t = current else { return }
+        setStarred([t], on)
+    }
+
+    /// Favorites changed from a list (swipe or menu): song rows read this so their heart updates right away.
+    private(set) var starOverrides: [String: Bool] = [:]
+    func isStarred(_ t: Track) -> Bool { starOverrides[t.id] ?? t.starred }
+
+    func setStarred(_ tracks: [Track], _ on: Bool) {
+        let ids = Set(tracks.filter { !$0.isLocal }.map(\.id))
+        guard !ids.isEmpty else { return }
+        for i in queue.indices where ids.contains(queue[i].id) { queue[i].starred = on }
+        for i in originalQueue.indices where ids.contains(originalQueue[i].id) { originalQueue[i].starred = on }
+        for id in ids { starOverrides[id] = on }
         updateNowPlayingTime()
-        let id = queue[index].id, c = client()
-        Task.detached { try? await c.setStarred(id, on) }
+        let c = client()
+        Task.detached {
+            for id in ids { try? await c.setStarred(id, on) }
+        }
     }
 
     // MARK: - Loading songs into AVPlayer

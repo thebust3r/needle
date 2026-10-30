@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 struct ArtistRoute: Hashable { let id: String; let name: String }
 struct PlaylistRoute: Hashable { let playlist: Playlist }
 struct LocalAlbumRoute: Hashable { let name: String; let artist: String }
-enum ListRoute: Hashable { case albums, artists, playlists, favorites, downloads, onPhone, importer }
+enum ListRoute: Hashable { case albums, artists, playlists, favorites, downloads, onPhone, importer, getQueue }
 
 extension View {
     func withDestinations() -> some View {
@@ -27,8 +27,10 @@ extension View {
                 case .downloads: DownloadsView()
                 case .onPhone: OnPhoneView()
                 case .importer: ImportView()
+                case .getQueue: DownloadQueueView()
                 }
             }
+            .navigationDestination(for: CatalogAlbum.self) { CatalogAlbumView(album: $0) }
     }
 }
 
@@ -52,6 +54,7 @@ struct LibraryView: View {
                 row("Downloaded", "arrow.down.circle", .downloads, count: downloads.saved.count)
                 if settings.config.isComplete {
                     row("Import a Spotify Playlist", "square.and.arrow.down.on.square", .importer)
+                    row("Download Queue", "icloud.and.arrow.down", .getQueue)
                 }
                 row("On This iPhone", "iphone", .onPhone, count: local.tracks.count)
                 NavigationLink(value: WrappedRoute()) {
@@ -201,14 +204,38 @@ struct PlaylistsListView: View {
         .background(Theme.background)
         .navigationTitle("Playlists")
         .toolbar {
-            NavigationLink(value: ListRoute.importer) { Label("Import from Spotify", systemImage: "square.and.arrow.down") }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                NavigationLink(value: ListRoute.importer) { Label("Import from Spotify", systemImage: "square.and.arrow.down") }
+                Button { naming = true } label: { Label("New Playlist", systemImage: "plus") }
+            }
+        }
+        .alert("New Playlist", isPresented: $naming) {
+            TextField("Name", text: $newName)
+            Button("Cancel", role: .cancel) { newName = "" }
+            Button("Create") { create() }
         }
         .overlay {
             if loader.value?.isEmpty == true {
-                StatusView(icon: "music.note.list", title: "No playlists yet", message: "Playlists you make in Navidrome show up here.")
+                StatusView(icon: "music.note.list", title: "No playlists yet",
+                           message: "Tap + to make one, or choose Add to Playlist from any song's ••• menu.")
             }
         }
         .task { await loader.load { try await app.client.playlists() } }
+        .onChange(of: PlaylistPicker.shared.changed) { _, _ in Task { await loader.load { try await app.client.playlists() } } }
+    }
+
+    @State private var naming = false
+    @State private var newName = ""
+
+    private func create() {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        newName = ""
+        guard !name.isEmpty else { return }
+        let c = app.client
+        Task {
+            try? await c.createPlaylist(name: name, songIds: [])
+            await loader.load { try await c.playlists() }
+        }
     }
 }
 
@@ -229,7 +256,7 @@ struct PlaylistView: View {
                 PlayButtons(play: { player.play(tracks) }, shuffle: { player.play(tracks, shuffle: true) })
                 LazyVStack(spacing: 0) {
                     ForEach(Array(tracks.enumerated()), id: \.offset) { i, t in
-                        TrackRow(track: t) { player.play(tracks, startAt: i) }
+                        TrackRow(track: t, onRemove: { remove(at: i) }) { player.play(tracks, startAt: i) }
                     }
                 }
             }
@@ -239,6 +266,24 @@ struct PlaylistView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { Menu { TrackMenu(tracks: tracks) } label: { Image(systemName: "ellipsis.circle") } }
         .task { await loader.load { try await app.client.playlist(playlist.id).map(Track.init(song:)) } }
+        .onChange(of: PlaylistPicker.shared.changed) { _, _ in Task { await reload() } }
+    }
+
+    private func reload() async {
+        await loader.load { try await app.client.playlist(playlist.id).map(Track.init(song:)) }
+    }
+
+    private func remove(at i: Int) {
+        let c = app.client, id = playlist.id
+        Task {
+            do {
+                try await c.removeFromPlaylist(id, index: i)
+                player.errorMessage = "Removed from \(playlist.name)"
+                await reload()
+            } catch {
+                player.errorMessage = "Couldn't change the playlist. \(error.localizedDescription)"
+            }
+        }
     }
 }
 
@@ -302,7 +347,7 @@ struct DownloadsView: View {
                 .listRowBackground(Theme.background)
             }
             ForEach(Array(tracks.enumerated()), id: \.element.id) { i, t in
-                TrackRow(track: t) { player.play(tracks, startAt: i) }
+                TrackRow(track: t, swipes: false) { player.play(tracks, startAt: i) }
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Theme.background)
             }

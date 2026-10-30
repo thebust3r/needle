@@ -20,32 +20,33 @@ struct QueueView: View {
                         .listRowBackground(Color.clear)
                     }
                 }
-                Section {
-                    ForEach(Array(player.upNext.enumerated()), id: \.offset) { i, t in
-                        Button { player.jump(toUpNext: i) } label: {
-                            HStack(spacing: 12) {
-                                ArtworkView(track: t, size: 40, corner: 5)
-                                VStack(alignment: .leading) {
-                                    Text(t.title).lineLimit(1)
-                                    Text(t.artist).font(.caption).foregroundStyle(Theme.secondary).lineLimit(1)
-                                }
-                                Spacer()
-                                Text(formatTime(t.duration)).font(.caption.monospacedDigit()).foregroundStyle(Theme.tertiary)
-                            }
+                let n = player.queuedCount
+                let up = player.upNext
+                if n > 0 {
+                    Section {
+                        ForEach(Array(up.prefix(n).enumerated()), id: \.offset) { i, t in row(t, at: i) }
+                            .onDelete { player.removeUpNext(at: $0) }
+                            .onMove { player.moveUpNext(from: $0, to: min($1, n)) }
+                    } header: {
+                        HStack {
+                            Text("Next in Queue")
+                            Spacer()
+                            Button("Clear") { withAnimation { player.clearQueued() } }.font(.caption.weight(.semibold))
                         }
-                        .foregroundStyle(.white)
-                        .listRowBackground(Color.clear)
                     }
-                    .onDelete { player.removeUpNext(at: $0) }
-                    .onMove { player.moveUpNext(from: $0, to: $1) }
+                }
+                Section {
+                    ForEach(Array(up.dropFirst(n).enumerated()), id: \.offset) { i, t in row(t, at: i + n) }
+                        .onDelete { offsets in player.removeUpNext(at: IndexSet(offsets.map { $0 + n })) }
+                        .onMove { from, to in player.moveUpNext(from: IndexSet(from.map { $0 + n }), to: to + n) }
                 } header: {
                     HStack {
-                        Text("Up Next")
+                        Text(n > 0 ? "Then" : "Up Next")
                         Spacer()
                         if player.shuffled { Label("Shuffled", systemImage: "shuffle").font(.caption) }
                     }
                 } footer: {
-                    if player.upNext.isEmpty { Text("Nothing queued. Long-press any song to add it.") }
+                    if up.isEmpty { Text("Nothing queued. Swipe a song right, or use its ••• menu, to add it.") }
                 }
             }
             .listStyle(.insetGrouped)
@@ -54,5 +55,21 @@ struct QueueView: View {
             .navigationTitle("Queue")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+
+    private func row(_ t: Track, at i: Int) -> some View {
+        Button { player.jump(toUpNext: i) } label: {
+            HStack(spacing: 12) {
+                ArtworkView(track: t, size: 40, corner: 5)
+                VStack(alignment: .leading) {
+                    Text(t.title).lineLimit(1)
+                    Text(t.artist).font(.caption).foregroundStyle(Theme.secondary).lineLimit(1)
+                }
+                Spacer()
+                Text(formatTime(t.duration)).font(.caption.monospacedDigit()).foregroundStyle(Theme.tertiary)
+            }
+        }
+        .foregroundStyle(.white)
+        .listRowBackground(Color.clear)
     }
 }

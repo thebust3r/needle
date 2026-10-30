@@ -37,7 +37,8 @@ function auth(fixed) {
   return `u=${encodeURIComponent(cfg.user)}&t=${md5(cfg.pass + salt)}&s=${salt}&v=1.16.1&c=PlatterWeb&f=json`;
 }
 function rest(ep, params = {}, fixed = false) {
-  const q = Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+  const q = Object.entries(params).filter(([, v]) => v != null)
+    .flatMap(([k, v]) => (Array.isArray(v) ? v : [v]).map((x) => `${k}=${encodeURIComponent(x)}`)).join("&");
   return `rest/${ep}?${auth(fixed)}${q ? "&" + q : ""}`;
 }
 async function api(ep, params) {
@@ -81,6 +82,9 @@ const lib = {
   random: (size) => api("getRandomSongs", { size }).then((r) => (r.randomSongs?.song || []).map(toTrack)),
   starred: () => api("getStarred2").then((r) => r.starred2 || {}),
   star: (id, on) => api(on ? "star" : "unstar", { id }),
+  createPlaylist: (name, songIds) => api("createPlaylist", { name, songId: songIds }).then((r) => r.playlist),
+  addToPlaylist: (id, songIds) => api("updatePlaylist", { playlistId: id, songIdToAdd: songIds }),
+  removeFromPlaylist: (id, indexes) => api("updatePlaylist", { playlistId: id, songIndexToRemove: indexes }),
   scrobble: (id) => api("scrobble", { id, submission: true }).catch(() => {}),
 };
 
@@ -520,14 +524,18 @@ const player = {
   toggleShuffle() {
     const cur = this.current;
     if (!cur) return;
+    const queued = this.queue.slice(this.i + 1, this.i + 1 + this.queuedCount());
     if (this.shuffled) {
-      this.queue = this.original.slice();
-      this.i = Math.max(0, this.queue.findIndex((t) => t.id === cur.id));
+      const base = this.original.slice();
+      const at = Math.max(0, base.findIndex((t) => t.id === cur.id));
+      base.splice(at, 1, cur, ...queued);
+      this.queue = base;
+      this.i = at;
     } else {
-      this.original = this.queue.slice();
-      const rest = this.queue.filter((_, k) => k !== this.i);
+      this.original = this.queue.filter((t) => !t.queued);
+      const rest = this.queue.filter((t, k) => k > this.i + queued.length || (k < this.i && !t.queued));
       for (let k = rest.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [rest[k], rest[j]] = [rest[j], rest[k]]; }
-      this.queue = [cur, ...rest];
+      this.queue = [cur, ...queued, ...rest];
       this.i = 0;
     }
     this.shuffled = !this.shuffled;
@@ -539,8 +547,18 @@ const player = {
     this.resetNext();
     ui.update();
   },
-  playNext(tracks) { if (!this.queue.length) return this.play(tracks); this.queue.splice(this.i + 1, 0, ...tracks); this.resetNext(); toast("Playing next"); },
-  addToQueue(tracks) { if (!this.queue.length) return this.play(tracks); this.queue.push(...tracks); this.resetNext(); toast("Added to queue"); },
+  /** Songs you queued sit right after the current one ("Next in Queue"), ahead of the rest of the album or playlist. */
+  queuedCount() { let n = 0; while (this.queue[this.i + 1 + n]?.queued) n++; return n; },
+  playNext(tracks) {
+    if (!this.queue.length) return this.play(tracks);
+    this.queue.splice(this.i + 1, 0, ...tracks.map((t) => ({ ...t, queued: true })));
+    this.resetNext(); toast(tracks.length > 1 ? `Playing ${tracks.length} songs next` : "Playing next");
+  },
+  addToQueue(tracks) {
+    if (!this.queue.length) return this.play(tracks);
+    this.queue.splice(this.i + 1 + this.queuedCount(), 0, ...tracks.map((t) => ({ ...t, queued: true })));
+    this.resetNext(); toast(tracks.length > 1 ? `Added ${tracks.length} songs to queue` : "Added to queue");
+  },
   resetNext() { this.drop(this.next); this.next = null; this.nextIndex = -1; if (this.el && this.el.readyState >= 3) this.preload(); },
 
   /** Re-creates the current song's audio so turning the EQ on/off takes effect right away. */
@@ -581,9 +599,7 @@ const player = {
   star(on) {
     const t = this.current;
     if (!t || t.local) return;
-    t.starred = on;
-    lib.star(t.id, on).catch(() => toast("Couldn't update favorites."));
-    ui.update();
+    setStarred([t], on, true);
   },
 };
 
@@ -742,25 +758,161 @@ function glowLoop() {
   requestAnimationFrame(draw);
 }
 
-function showMenu(title, tracks) {
+/** Favorites a song (or un-favorites it) everywhere it shows up: the queue, this screen, Now Playing. */
+function setStarred(tracks, on, quiet) {
+  const ids = new Set(tracks.filter((t) => !t.local).map((t) => t.id));
+  if (!ids.size) return;
+  for (const list of [player.queue, player.original, screenTracks]) for (const t of list) if (ids.has(t.id)) t.starred = on;
+  for (const t of tracks) t.starred = on;
+  Promise.all([...ids].map((id) => lib.star(id, on))).catch(() => toast("Couldn't update favorites."));
+  if (!quiet) toast(on ? (ids.size > 1 ? `Added ${ids.size} songs to Favorites` : "Added to Favorites") : "Removed from Favorites");
+  document.querySelectorAll(".row[data-id]").forEach((r) => {
+    if (!ids.has(r.dataset.id)) return;
+    r.classList.toggle("starred", on);
+    const h = r.querySelector("svg.fav");
+    if (on && !h) r.querySelector(".dur")?.insertAdjacentHTML("beforebegin", `<svg class="i fav" aria-label="Favorite"><use href="#i-heartfill"/></svg>`);
+    if (!on && h) h.remove();
+  });
+  ui.update();
+}
+
+/** menuContext: what screen the menu was opened from, so it can offer "Remove from This Playlist". */
+let menuContext = null;
+function showMenu(title, tracks, ctx = null) {
   const m = $("#menu");
+  const real = tracks.filter((t) => !t.local);
+  const allStarred = real.length && real.every((t) => t.starred);
   m.innerHTML = `<div class="panel">
     <p>${esc(title)}</p>
     <button data-act="next">${icon("next-up")}Play Next</button>
     <button data-act="queue">${icon("append")}Add to Queue</button>
+    ${real.length ? `<button data-act="playlist">${icon("plus")}Add to Playlist…</button>` : ""}
+    ${real.length ? `<button data-act="star">${icon(allStarred ? "heartfill" : "heart")}${allStarred ? "Remove from Favorites" : "Add to Favorites"}</button>` : ""}
+    ${ctx?.playlistId && ctx.index != null ? `<button data-act="unlist">${icon("minus")}Remove from This Playlist</button>` : ""}
     ${tracks.length === 1 && tracks[0].albumId ? `<button data-act="album">${icon("album")}Go to Album</button>` : ""}
     ${tracks.length === 1 && tracks[0].artistId ? `<button data-act="artist">${icon("mic")}Go to Artist</button>` : ""}
   </div>`;
   m.hidden = false;
   m.onclick = (e) => {
     const act = e.target.closest("button")?.dataset.act;
+    if (act === "playlist") return showPlaylistPicker(real);
     m.hidden = true;
     if (act === "next") player.playNext(tracks);
     if (act === "queue") player.addToQueue(tracks);
+    if (act === "star") setStarred(real, !allStarred);
+    if (act === "unlist") removeFromPlaylist(ctx.playlistId, ctx.index);
     if (act === "album") { closeNP(); location.hash = `#/album/${tracks[0].albumId}`; }
     if (act === "artist") { closeNP(); location.hash = `#/artist/${tracks[0].artistId}`; }
   };
 }
+
+async function removeFromPlaylist(id, index) {
+  try {
+    await lib.removeFromPlaylist(id, [index]);
+    toast("Removed from playlist");
+    if (location.hash === `#/playlist/${id}`) route();
+  } catch (e) { toast(`Couldn't change the playlist: ${e.message}`); }
+}
+
+/** "Add to Playlist": pick one of your playlists, or make a new one with these songs in it. */
+async function showPlaylistPicker(tracks) {
+  const m = $("#menu");
+  const ids = tracks.map((t) => t.id);
+  const what = tracks.length === 1 ? `“${tracks[0].title}”` : `${tracks.length} songs`;
+  m.hidden = false;
+  m.innerHTML = `<div class="panel picker"><p>Add ${esc(what)} to…</p>
+    <form id="pl-new" class="pl-new"><label class="field">${icon("plus")}<input id="pl-name" placeholder="New playlist name" autocomplete="off" maxlength="120"></label><button class="pill primary" type="submit">Create</button></form>
+    <div id="pl-list"><p class="note">Loading your playlists…</p></div></div>`;
+  m.onclick = (e) => {
+    if (e.target === m) { m.hidden = true; return; }
+    const b = e.target.closest("[data-pl]");
+    if (!b) return;
+    m.hidden = true;
+    lib.addToPlaylist(b.dataset.pl, ids).then(() => toast(`Added to ${b.dataset.name}`))
+      .catch((err) => toast(`Couldn't add it: ${err.message}`));
+  };
+  $("#pl-new").onsubmit = (e) => {
+    e.preventDefault();
+    const name = $("#pl-name").value.trim();
+    if (!name) { $("#pl-name").focus(); return; }
+    m.hidden = true;
+    lib.createPlaylist(name, ids).then(() => { toast(`Made “${name}”`); if (location.hash === "#/playlists") route(); })
+      .catch((err) => toast(`Couldn't make the playlist: ${err.message}`));
+  };
+  try {
+    const lists = (await lib.playlists()).filter((p) => !p.readonly && (!p.owner || p.owner === cfg.user));
+    if (m.hidden || !$("#pl-list")) return;
+    $("#pl-list").innerHTML = lists.length ? lists.map((p) => `<button data-pl="${esc(p.id)}" data-name="${esc(p.name)}">
+        <img class="art" loading="lazy" src="${cover(p.coverArt || p.id, 160)}" alt=""><span class="pl-meta"><b>${esc(p.name)}</b><small>${p.songCount || 0} songs</small></span></button>`).join("")
+      : `<p class="note">No playlists yet. Name one above to make it.</p>`;
+  } catch (err) { if ($("#pl-list")) $("#pl-list").innerHTML = `<p class="note">Couldn't load playlists: ${esc(err.message)}</p>`; }
+}
+
+function newPlaylistSheet() {
+  const m = $("#menu");
+  m.hidden = false;
+  m.innerHTML = `<div class="panel picker"><p>New playlist</p>
+    <form id="pl-new" class="pl-new"><label class="field">${icon("playlist")}<input id="pl-name" placeholder="Name it" autocomplete="off" maxlength="120"></label><button class="pill primary" type="submit">Create</button></form>
+    <p class="note">Add songs with ••• → Add to Playlist.</p></div>`;
+  m.onclick = (e) => { if (e.target === m) m.hidden = true; };
+  setTimeout(() => $("#pl-name")?.focus(), 50);
+  $("#pl-new").onsubmit = async (e) => {
+    e.preventDefault();
+    const name = $("#pl-name").value.trim();
+    if (!name) return;
+    m.hidden = true;
+    try {
+      const p = await lib.createPlaylist(name, []);
+      toast(`Made “${name}”`);
+      if (p?.id) location.hash = `#/playlist/${p.id}`; else route();
+    } catch (err) { toast(`Couldn't make the playlist: ${err.message}`); }
+  };
+}
+
+/* ---------- swipe a song row: right = add to queue, left = favorite (like Spotify) ---------- */
+const swipe = {
+  start(e) {
+    const row = e.target.closest(".row[data-index]");
+    if (!row || +row.dataset.index < 0 || e.target.closest("button.more")) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    this.row = row; this.x0 = e.clientX; this.y0 = e.clientY; this.dx = 0; this.on = false; this.armed = false; this.id = e.pointerId;
+  },
+  move(e) {
+    if (!this.row || e.pointerId !== this.id) return;
+    const dx = e.clientX - this.x0, dy = e.clientY - this.y0;
+    if (!this.on) {
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { this.row = null; return; }   // scrolling
+      if (Math.abs(dx) < 12) return;
+      this.on = true;
+      this.row.classList.add("swiping");
+      try { this.row.setPointerCapture(e.pointerId); } catch { /* fine */ }
+    }
+    e.preventDefault();
+    const w = this.row.offsetWidth, lim = w * 0.45;
+    this.dx = Math.max(-lim, Math.min(lim, dx * (Math.abs(dx) > lim * 0.8 ? 0.6 : 1)));
+    const t = screenTracks[+this.row.dataset.index];
+    const fav = t?.starred;
+    this.row.style.setProperty("--dx", `${this.dx}px`);
+    this.row.dataset.swipe = this.dx > 0 ? "queue" : "fav";
+    this.row.dataset.swipeLabel = this.dx > 0 ? "Add to Queue" : fav ? "Unfavorite" : "Favorite";
+    const armed = Math.abs(this.dx) > Math.min(90, w * 0.25);
+    if (armed !== this.armed) { this.armed = armed; this.row.classList.toggle("armed", armed); if (armed && navigator.vibrate) navigator.vibrate(8); }
+  },
+  end(e) {
+    const row = this.row;
+    if (!row || e.pointerId !== this.id) return;
+    this.row = null;
+    if (!this.on) return;
+    this.suppressClick = true; setTimeout(() => (this.suppressClick = false), 50);
+    row.classList.remove("swiping", "armed");
+    row.style.setProperty("--dx", "0px");
+    if (!this.armed || e.type === "pointercancel") return;
+    const t = screenTracks[+row.dataset.index];
+    if (!t) return;
+    if (this.dx > 0) player.addToQueue([t]);
+    else setStarred([t], !t.starred);
+  },
+};
 
 /* ============================================================
    Equalizer sheet
@@ -946,16 +1098,22 @@ function hexA(color, a) {
 function renderQueue() {
   const s = $("#queue");
   const up = player.queue.slice(player.i + 1);
+  const nq = player.queuedCount();
   const t = player.current;
+  const qrow = (x, k) => `<div class="row" data-q="${k}">
+        <img class="art" loading="lazy" src="${cover(x.coverArt, 160)}" alt="">
+        <div class="meta"><b>${esc(x.title)}</b><span>${esc(x.artist)}</span></div>
+        <button class="more" data-remove="${k}" aria-label="Remove">${icon("x")}</button></div>`;
+  const rest = up.slice(nq);
   s.innerHTML = `
     <div class="sheet-head"><span></span><h3>Queue</h3><button class="done" id="q-done">Done</button></div>
     ${t ? `<div class="disc">Now Playing</div>${trackRow(t, -1, true)}` : ""}
-    <div class="disc">Up Next${player.shuffled ? " · Shuffled" : ""}</div>
-    ${up.length ? up.map((x, k) => `<div class="row" data-q="${k}">
-        <img class="art" loading="lazy" src="${cover(x.coverArt, 160)}" alt="">
-        <div class="meta"><b>${esc(x.title)}</b><span>${esc(x.artist)}</span></div>
-        <button class="more" data-remove="${k}" aria-label="Remove">${icon("x")}</button></div>`).join("")
-      : `<p class="note">Nothing queued. Tap ••• on any song to add it.</p>`}`;
+    ${nq ? `<div class="disc" id="q-next">Next in Queue<button class="link" id="q-clear">Clear</button></div>${up.slice(0, nq).map(qrow).join("")}` : ""}
+    <div class="disc">${nq ? "Then" : "Up Next"}${player.shuffled ? " · Shuffled" : ""}</div>
+    ${rest.length ? rest.map((x, k) => qrow(x, k + nq)).join("")
+      : `<p class="note">${nq ? "Nothing after that." : "Nothing queued. Swipe a song right, or tap ••• on it, to add it."}</p>`}`;
+  const clear = $("#q-clear");
+  if (clear) clear.onclick = (e) => { e.stopPropagation(); player.queue.splice(player.i + 1, nq); player.resetNext(); renderQueue(); };
   $("#q-done").onclick = () => (s.hidden = true);
   s.onclick = (e) => {
     const rm = e.target.closest("[data-remove]");
@@ -974,10 +1132,11 @@ let screenTracks = [];       // the songs listed on the current screen, for tap-
 
 function trackRow(t, index, showArt = true, number) {
   const cur = player.current?.id === t.id;
-  return `<div class="row ${cur ? "current" : ""}" data-id="${esc(t.id)}" data-index="${index}" role="button" tabindex="0">
+  return `<div class="row ${cur ? "current" : ""}${t.starred ? " starred" : ""}" data-id="${esc(t.id)}" data-index="${index}" role="button" tabindex="0">
     ${showArt ? `<img class="art" loading="lazy" src="${cover(t.coverArt, 160)}" alt="">`
               : `<span class="num">${cur ? '<span class="bars"><i></i><i></i><i></i></span>' : (number ?? "")}</span>`}
     <div class="meta"><b>${esc(t.title)}</b><span>${esc(showArt ? `${t.artist} · ${t.album}` : t.artist)}</span></div>
+    ${t.starred ? `<svg class="i fav" aria-label="Favorite"><use href="#i-heartfill"/></svg>` : ""}
     <span class="dur">${fmt(t.duration)}</span>
     ${index >= 0 ? `<button class="more" data-more="${index}" aria-label="More">${icon("more")}</button>` : ""}
   </div>`;
@@ -991,9 +1150,20 @@ const backLink = () => `<a class="back" href="javascript:history.back()">${icon(
 const errorBox = (e) => `<div class="empty"><b>Something went wrong</b>${esc(e.message || e)}<br><br><button class="pill" style="flex:none;display:inline-flex" onclick="route()">Try Again</button></div>`;
 const loading = () => `<div class="empty">Loading…</div>`;
 
+view.addEventListener("pointerdown", (e) => swipe.start(e));
+view.addEventListener("pointermove", (e) => swipe.move(e));
+view.addEventListener("pointerup", (e) => swipe.end(e));
+view.addEventListener("pointercancel", (e) => swipe.end(e));
+view.addEventListener("click", (e) => { if (swipe.suppressClick) { e.stopPropagation(); e.preventDefault(); } }, true);
 view.addEventListener("click", (e) => {
   const more = e.target.closest("[data-more]");
-  if (more) { e.stopPropagation(); const t = screenTracks[+more.dataset.more]; if (t) showMenu(t.title, [t]); return; }
+  if (more) {
+    e.stopPropagation();
+    const t = screenTracks[+more.dataset.more];
+    const pl = location.hash.match(/^#\/playlist\/(.+)$/);
+    if (t) showMenu(t.title, [t], pl ? { playlistId: decodeURIComponent(pl[1]), index: +more.dataset.more } : null);
+    return;
+  }
   const row = e.target.closest(".row[data-index]");
   if (row && +row.dataset.index >= 0) { player.play(screenTracks, +row.dataset.index); return; }
   const pb = e.target.closest("[data-play]");
@@ -1022,7 +1192,7 @@ const screens = {
 
   async library() {
     view.innerHTML = `<h1 class="title">Library</h1>
-      ${[["albums", "album", "Albums"], ["artists", "mic", "Artists"], ["playlists", "playlist", "Playlists"], ["favorites", "heart", "Favorites"], ["files", "folder", "Play Files from This Phone"], ["import", "import", "Import a Spotify Playlist"], ["wrapped", "spark", "Your Wrapped"]]
+      ${[["albums", "album", "Albums"], ["artists", "mic", "Artists"], ["playlists", "playlist", "Playlists"], ["favorites", "heart", "Favorites"], ["files", "folder", "Play Files from This Phone"], ["import", "import", "Import a Spotify Playlist"], ["downloads", "download", "Downloads"], ["wrapped", "spark", "Your Wrapped"]]
         .map(([r, ic, label]) => `<a class="nav-row" href="#/${r}">${icon(ic)}${label}<span class="count">${icon("chev")}</span></a>`).join("")}`;
   },
 
@@ -1108,13 +1278,14 @@ const screens = {
 
   async playlists() {
     view.innerHTML = `${backLink()}<h1 class="title">Playlists</h1>
-      <div class="pill-row" style="margin-bottom:12px"><a class="pill" href="#/import">${icon("import")}Import from Spotify</a></div><div id="list">${loading()}</div>`;
+      <div class="pill-row" style="margin-bottom:12px"><button class="pill primary" id="pl-create">${icon("plus")}New Playlist</button><a class="pill" href="#/import">${icon("import")}Import from Spotify</a></div><div id="list">${loading()}</div>`;
+    $("#pl-create").onclick = () => newPlaylistSheet();
     try {
       const list = await lib.playlists();
       if (!$("#list")) return;   // left the screen while it loaded
       $("#list").innerHTML = list.map((p) => `<a class="row" href="#/playlist/${esc(p.id)}"><img class="art" loading="lazy" src="${cover(p.coverArt || p.id, 160)}" alt="">
         <div class="meta"><b>${esc(p.name)}</b><span>${p.songCount || 0} songs</span></div></a>`).join("")
-        || `<div class="empty"><b>No playlists yet</b>Playlists you make in Navidrome show up here.</div>`;
+        || `<div class="empty"><b>No playlists yet</b>Tap New Playlist, or tap ••• on any song and choose Add to Playlist.</div>`;
     } catch (e) { if ($("#list")) $("#list").innerHTML = errorBox(e); }
   },
 
@@ -1143,15 +1314,32 @@ const screens = {
   },
 
   async search() {
+    let mode = store.get("searchMode", "library"), kind = store.get("getKind", "song");
     view.innerHTML = `<h1 class="title">Search</h1>
-      <label class="field">${icon("search")}<input id="q" type="search" placeholder="Songs, albums, artists" autocomplete="off" value="${esc(store.get("lastSearch", ""))}"></label>
+      <div class="presets search-modes"><button class="chip" data-mode="library">Your Library</button><button class="chip" data-mode="get">${icon("download")}Download</button>
+        <a class="dl-link" href="#/downloads" id="dl-badge-link"><span id="dl-badge"></span></a></div>
+      <label class="field">${icon("search")}<input id="q" type="search" autocomplete="off" value="${esc(store.get("lastSearch", ""))}"></label>
+      <div class="presets get-kinds"><button class="chip" data-kind="song">Songs</button><button class="chip" data-kind="album">Albums</button></div>
       <div id="results"></div>`;
     const input = $("#q");
     let timer, token = 0;
+    const paint = () => {
+      view.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+      view.querySelectorAll("[data-kind]").forEach((b) => b.classList.toggle("on", b.dataset.kind === kind));
+      $(".get-kinds").hidden = mode !== "get";
+      $("#dl-badge-link").hidden = mode !== "get";
+      input.placeholder = mode === "get" ? (kind === "album" ? "Album or artist to download" : "Song to download (add the artist)") : "Songs, albums, artists";
+    };
+    view.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => { mode = b.dataset.mode; store.set("searchMode", mode); paint(); if (mode === "get") getMusic.badge(); run(); });
+    view.querySelectorAll("[data-kind]").forEach((b) => b.onclick = () => { kind = b.dataset.kind; store.set("getKind", kind); paint(); run(); });
+    paint();
+    if (mode === "get") getMusic.badge();
     const run = async () => {
       const q = input.value.trim();
       store.set("lastSearch", q);
       const my = ++token;
+      if (mode === "get") { $("#results").onclick = null; return getMusic.search(q, $("#results"), kind, () => my === token); }
+      $("#results").onclick = null;
       if (!q) { $("#results").innerHTML = `<div class="empty"><b>Find anything</b>Search songs, albums and artists across your library.</div>`; return; }
       try {
         const r = await lib.search(q);
@@ -1166,7 +1354,8 @@ const screens = {
           || `<div class="empty"><b>No results</b>Nothing matches “${esc(q)}”.</div>`;
       } catch (e) { if (my === token) $("#results").innerHTML = errorBox(e); }
     };
-    input.oninput = () => { clearTimeout(timer); timer = setTimeout(run, 300); };
+    input.oninput = () => { clearTimeout(timer); timer = setTimeout(run, mode === "get" ? 600 : 300); };
+    input.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(timer); run(); input.blur(); } };
     run();
     if (!input.value) input.focus();
   },
@@ -1284,7 +1473,7 @@ function route() {
   $("#dock").hidden = false;
   const [name, arg] = location.hash.replace(/^#\/?/, "").split("/");
   const screen = screens[name || "home"] && name !== "welcome" ? name || "home" : "home";
-  const tab = { wrapped: "library", albums: "library", artists: "library", playlists: "library", favorites: "library", files: "library", album: "library", artist: "library", playlist: "library", import: "library", mix: "home" }[screen] || screen;
+  const tab = { wrapped: "library", albums: "library", artists: "library", playlists: "library", favorites: "library", files: "library", album: "library", artist: "library", playlist: "library", import: "library", downloads: "library", getalbum: "search", mix: "home" }[screen] || screen;
   $$("#tabs a").forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
   window.scrollTo(0, 0);
   screens[screen](arg && decodeURIComponent(arg));
@@ -1448,7 +1637,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) chec
 
 window.addEventListener("hashchange", () => {
   const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (document.startViewTransition && !calm && !document.hidden) document.startViewTransition(route);
+  if (document.startViewTransition && !calm && !document.hidden) { const vt = document.startViewTransition(route); vt.ready.catch(() => {}); vt.finished.catch(() => {}); vt.updateCallbackDone.catch(() => {}); }
   else route();
 });
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", route); else route();   // after the add-on scripts load

@@ -143,7 +143,15 @@ class H(SimpleHTTPRequestHandler):
         if ep == "createPlaylist":
             CREATED.append({k: v for k, v in parse_qs(u.query).items() if k in ("name", "songId")}); return self.ok({"playlist": {"id": "pl9", "name": q.get("name")}})
         if ep == "getStarred2": return self.ok({"starred2": {"song": [songs["s2_1"], songs["s2_2"]], "album": []}})
-        if ep in ("getPlaylists", "star", "unstar", "scrobble"): return self.ok({"playlists": {"playlist": []}} if ep == "getPlaylists" else {})
+        if ep == "updatePlaylist":
+            CREATED.append({"update": q.get("playlistId"), **{k: v for k, v in parse_qs(u.query).items() if k in ("songIdToAdd", "songIndexToRemove")}}); return self.ok({})
+        if ep in ("star", "unstar"):
+            CREATED.append({ep: parse_qs(u.query).get("id")}); return self.ok({})
+        if ep == "getPlaylist":
+            return self.ok({"playlist": {"id": q["id"], "name": "Road Trip", "songCount": 4, "entry": list(songs.values())[:4]}})
+        if ep == "getPlaylists":
+            return self.ok({"playlists": {"playlist": [{"id": "pl1", "name": "Road Trip", "songCount": 4, "owner": q.get("u")}, {"id": "pl2", "name": "Gym", "songCount": 2}]}})
+        if ep == "scrobble": return self.ok({})
         if ep == "getCoverArt":
             body = cover_png(q["id"], min(int(q.get("size", 300)), 600))
             self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "max-age=3600"); self.end_headers(); return self.wfile.write(body)
