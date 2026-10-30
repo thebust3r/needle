@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -661,7 +661,7 @@ def pick_files(t, responses, title_only=False, limit=8):
             score -= min(2, max(0, extra - 3) * 0.3)
             score -= 1.5 * missing
             score += 1 if off is not None and off <= 2 else 0
-            picks.append((score, {"user": user, "filename": fn, "size": f.get("size", 0)}))
+            picks.append((score, {"user": user, "filename": fn, "size": f.get("size", 0), "free": bool(r.get("hasFreeUploadSlot"))}))
     picks.sort(key=lambda p: -p[0])
     out, users = [], set()
     for _, p in picks:
@@ -744,10 +744,20 @@ def step_song(job, t, now):
     elif st == "searching":
         s = slskd(f"searches/{t['_search']}")
         done = (s or {}).get("isComplete") or "Completed" in str((s or {}).get("state", ""))
+        responses = None
         if not done and now - t["_since"] < SEARCH_WAIT + 10:
-            t["_next"] = now + (0.5 if FAST else 4)
-            return
-        responses = slskd(f"searches/{t['_search']}/responses") or []
+            # don't wait out the whole search once someone with a free slot has a good copy
+            if now - t["_since"] >= (1 if FAST else 6):
+                responses = slskd(f"searches/{t['_search']}/responses") or []
+                early = pick_files(t, responses, t.get("_title_only_ok", False))
+                if len([p for p in early if p.get("free")]) < (1 if FAST else 2):
+                    t["_next"] = now + (0.5 if FAST else 3)
+                    return
+            else:
+                t["_next"] = now + (0.5 if FAST else 3)
+                return
+        if responses is None:
+            responses = slskd(f"searches/{t['_search']}/responses") or []
         try:
             slskd(f"searches/{t['_search']}", "DELETE")
         except Exception:
@@ -790,7 +800,7 @@ def step_song(job, t, now):
             t["file"] = move_into_library(t, src)
             t.update(status="importing", note="Adding to your library", _since=now, progress=100)
             Navidrome(job["creds"]).scan()
-            t["_next"] = now + (0.5 if FAST else 10)
+            t["_next"] = now + (0.5 if FAST else 5)
         elif f and "Completed" in state:
             next_pick(t, now, f"{p['user']}'s copy failed ({state.split(',')[-1].strip()})")
         else:
@@ -821,7 +831,7 @@ def step_song(job, t, now):
             t.update(status="failed", note=f"Downloaded to Music/{t.get('file', '')}, but Navidrome hasn't added it yet. "
                                            f"It'll show up after the next library scan{later}.")
             return
-        t["_next"] = now + (0.5 if FAST else 20)
+        t["_next"] = now + (0.5 if FAST else 8)
 
 
 def next_pick(t, now, why=None):
