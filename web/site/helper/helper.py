@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -1176,6 +1176,7 @@ def queue_downloads(creds, items, album=None):
                                "(Downloading it song by song mixes copies from different people.)")
         name = request_album(rgid) or name
         whole = (rgid, name)
+        log("album sent to Lidarr:", name, rgid)
     nav = Navidrome(creds)
     added = []
     owned = {}
@@ -1186,6 +1187,27 @@ def queue_downloads(creds, items, album=None):
         except Exception:
             owned[k] = None
     with LOCK:
+        if whole:
+            # songs from this album already going song by song: hand them to Lidarr instead (one clean copy)
+            want = {(clean_title(str(it.get("title") or "")), norm(primary_artist({"artists": [str(a) for a in (it.get("artists") or []) if a]})))
+                    for it in items}
+            for t in job["tracks"]:
+                if t.get("method") == "song" and t["status"] in ("queued", "searching", "downloading") and \
+                        (clean_title(t["title"]), norm(primary_artist(t))) in want:
+                    p = (t.get("_picks") or [None])[t.get("_try", 0)] if t["status"] == "downloading" and t.get("_picks") else None
+                    if p:
+                        try:
+                            info = slskd(f"transfers/downloads/{quote(p['user'])}") or {}
+                            for d in info.get("directories") or []:
+                                for x in d.get("files") or []:
+                                    if x.get("filename") == p["filename"] and x.get("id"):
+                                        slskd(f"transfers/downloads/{quote(p['user'])}/{x['id']}?remove=true", "DELETE")
+                        except Exception:
+                            pass
+                    for k in [k for k in t if k.startswith("_")]:
+                        t.pop(k, None)
+                    t.update(method="album", status="album", _album=whole[0], _since=time.time(), _next=time.time() + (0.5 if FAST else 30),
+                             note=f"Lidarr is getting the album {whole[1]}", progress=None)
         busy = {(clean_title(t["title"]), norm(primary_artist(t))) for t in job["tracks"] if t["status"] in ACTIVE}
         nxt = max([t["i"] for t in job["tracks"]] + [-1]) + 1
         for k, it in enumerate(items[:200]):
