@@ -51,18 +51,13 @@ final class LookUITests: PlatterUITestCase {
         app.swipeUp()
         sleep(1)
         shot("editor-3-options")
-        for chip in ["chip-Glossy", "chip-Dock", "chip-Sparkles", "chip-Bubbly"] {
-            let c = app.buttons[chip].firstMatch
-            if !c.isHittable { app.swipeUp() }
-            waitFor(c).tap()
+        for chip in ["chip-Sparkles", "chip-Bubbly", "chip-Glossy", "chip-Dock"] {
+            reveal(app.buttons[chip].firstMatch).tap()
         }
         sleep(1)
         shot("editor-4-customized")
-        app.swipeUp()
-        app.swipeUp()
-        let cassette = app.buttons["chip-Cassette"].firstMatch
-        waitFor(cassette).tap()
-        waitFor(app.buttons["look-save"]).tap()
+        reveal(app.buttons["chip-Cassette"].firstMatch).tap()
+        reveal(app.buttons["look-save"].firstMatch).tap()
         let field = app.alerts.textFields.firstMatch
         waitFor(field, 5).tap()
         field.typeText(" Test")

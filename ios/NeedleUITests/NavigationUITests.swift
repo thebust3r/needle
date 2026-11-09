@@ -37,6 +37,18 @@ class PlatterUITestCase: XCTestCase {
         return e
     }
 
+    /// Scrolls up until the element can be tapped (it may be below the screen or behind the tab bar).
+    @discardableResult
+    func reveal(_ e: XCUIElement, file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        XCTAssertTrue(e.waitForExistence(timeout: 10), "never showed up: \(e)", file: file, line: line)
+        var tries = 0
+        while tries < 8 && !(e.isHittable && e.frame.minY > 110 && e.frame.maxY < app.frame.maxY - 150) {
+            if e.frame.minY <= 110 { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
+            tries += 1
+        }
+        return e
+    }
+
     /// Opens Library > Albums > the first album.
     func openFirstAlbum() {
         tab("library").tap()
