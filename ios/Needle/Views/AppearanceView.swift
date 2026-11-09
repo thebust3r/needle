@@ -96,7 +96,7 @@ struct AppearanceView: View {
                 .padding(.horizontal, 20)
             }
             .padding(.vertical, 16)
-            .padding(.bottom, 30)
+            .padding(.bottom, 40)
         }
         .themedBackground()
         .navigationTitle("Appearance")
@@ -224,12 +224,16 @@ struct FlowLayout: Layout {
     var spacing: CGFloat = 8
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? 360
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let natural = sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(0, sizes.count - 1))
+        // no width given (or "as wide as you like"): one row; otherwise wrap exactly like placeSubviews does
+        guard let width = proposal.width, width.isFinite else {
+            return CGSize(width: natural, height: sizes.map(\.height).max() ?? 0)
+        }
         var x: CGFloat = 0
         var y: CGFloat = 0
         var row: CGFloat = 0
-        for v in subviews {
-            let s = v.sizeThatFits(.unspecified)
+        for s in sizes {
             if x > 0 && x + s.width > width {
                 x = 0
                 y += row + spacing
