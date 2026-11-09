@@ -5,9 +5,13 @@ import XCTest
 class PlatterUITestCase: XCTestCase {
     var app: XCUIApplication!
 
+    /// The look to start in (nil: whatever the app has saved).
+    var startLook: String? { nil }
+
     override func setUp() {
         continueAfterFailure = false
         app = XCUIApplication()
+        if let startLook { app.launchEnvironment["UITEST_LOOK"] = startLook }
         app.launchEnvironment["UITEST_SERVER"] = ProcessInfo.processInfo.environment["UITEST_SERVER"] ?? "http://127.0.0.1:8796"
         app.launchEnvironment["UITEST_USER"] = "mason"
         app.launchEnvironment["UITEST_PASS"] = "pw"

@@ -1,43 +1,36 @@
 import XCTest
 
 /// Every built-in look, photographed on the main screens, plus the Appearance editor itself.
-final class LookUITests: PlatterUITestCase {
-    static let looks = ["chrome", "burned", "neon", "analog", "glow", "vinyl", "classic"]
-
-    func launch(look: String) {
-        app.terminate()
-        app.launchEnvironment["UITEST_LOOK"] = look
-        app.launch()
+class LookTourCase: PlatterUITestCase {
+    /// Photographs one look on Home, an album, the mini player, Now Playing and Settings.
+    func tour(_ n: Int, _ look: String) {
         waitFor(tab("home"))
+        sleep(2)
+        shot("look-\(n)-\(look)-1-home")
+        openFirstAlbum()
+        sleep(1)
+        shot("look-\(n)-\(look)-2-album")
+        app.otherElements.matching(identifier: "track-row").element(boundBy: 1).tap()
+        let mini = waitFor(app.otherElements["mini-player"], 10)
+        sleep(1)
+        shot("look-\(n)-\(look)-3-mini")
+        mini.tap()
+        waitFor(app.buttons["np-close"], 10)
+        sleep(2)
+        shot("look-\(n)-\(look)-4-nowplaying")
+        app.buttons["np-close"].tap()
+        sleep(1)
+        tab("settings").tap()
+        sleep(1)
+        shot("look-\(n)-\(look)-5-settings")
     }
+}
 
-    func testEveryLookOnTheMainScreens() {
-        for (n, look) in Self.looks.enumerated() {
-            launch(look: look)
-            sleep(2)
-            shot("look-\(n)-\(look)-1-home")
-            openFirstAlbum()
-            sleep(1)
-            shot("look-\(n)-\(look)-2-album")
-            // play the second song and open Now Playing
-            app.otherElements.matching(identifier: "track-row").element(boundBy: 1).tap()
-            let mini = waitFor(app.otherElements["mini-player"], 10)
-            sleep(1)
-            shot("look-\(n)-\(look)-3-mini")
-            mini.tap()
-            waitFor(app.buttons["np-close"], 10)
-            sleep(2)
-            shot("look-\(n)-\(look)-4-nowplaying")
-            app.buttons["np-close"].tap()
-            sleep(1)
-            tab("settings").tap()
-            sleep(1)
-            shot("look-\(n)-\(look)-5-settings")
-        }
-    }
+final class LookUITests: PlatterUITestCase {
+
+    override var startLook: String? { "chrome" }
 
     func testTheAppearanceEditor() {
-        launch(look: "chrome")
         tab("settings").tap()
         let link = app.buttons["settings-appearance"].firstMatch
         if !link.waitForExistence(timeout: 5) { app.swipeUp() }
@@ -72,7 +65,6 @@ final class LookUITests: PlatterUITestCase {
     }
 
     func testHomeLayoutEditor() {
-        launch(look: "chrome")
         tab("settings").tap()
         let link = app.buttons["settings-home-layout"].firstMatch
         if !link.waitForExistence(timeout: 5) { app.swipeUp() }
@@ -91,3 +83,40 @@ final class LookUITests: PlatterUITestCase {
         waitFor(app.switches["Show Quick Picks"].firstMatch).tap()
     }
 }
+
+// One test per look, each starting the app fresh in that look.
+final class Look0ChromeUITests: LookTourCase {
+    override var startLook: String? { "chrome" }
+    func testTour() { tour(0, "chrome") }
+}
+
+final class Look1BurnedUITests: LookTourCase {
+    override var startLook: String? { "burned" }
+    func testTour() { tour(1, "burned") }
+}
+
+final class Look2NeonUITests: LookTourCase {
+    override var startLook: String? { "neon" }
+    func testTour() { tour(2, "neon") }
+}
+
+final class Look3AnalogUITests: LookTourCase {
+    override var startLook: String? { "analog" }
+    func testTour() { tour(3, "analog") }
+}
+
+final class Look4GlowUITests: LookTourCase {
+    override var startLook: String? { "glow" }
+    func testTour() { tour(4, "glow") }
+}
+
+final class Look5VinylUITests: LookTourCase {
+    override var startLook: String? { "vinyl" }
+    func testTour() { tour(5, "vinyl") }
+}
+
+final class Look6ClassicUITests: LookTourCase {
+    override var startLook: String? { "classic" }
+    func testTour() { tour(6, "classic") }
+}
+
