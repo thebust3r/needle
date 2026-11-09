@@ -81,7 +81,7 @@ struct SearchView: View {
             }
         }
         .scrollDismissesKeyboard(.immediately)
-        .background(Theme.background)
+        .themedBackground()
         .toolbar(.hidden, for: .navigationBar)
         .safeAreaInset(edge: .top) {
             VStack(spacing: 4) {
@@ -90,7 +90,7 @@ struct SearchView: View {
                 searchField
                 if mode == "get" { kindPicker }
             }
-            .background(Theme.background)
+            .themedBackground()
         }
         .withDestinations()
         .task(id: query) {
@@ -172,9 +172,9 @@ struct SearchView: View {
             }
         }
         .padding(12)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner(14), style: .continuous))
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
-        .background(Theme.background)
+        .themedBackground()
     }
 }

@@ -109,7 +109,7 @@ struct AlbumView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.corner(14), style: .continuous))
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
     }
@@ -274,7 +274,7 @@ struct AlbumLayout: View {
                 .frame(height: 560)
                 .ignoresSafeArea(edges: .top)
         }
-        .background(Theme.background)
+        .themedBackground()
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task(id: artTrack?.artworkKey ?? coverArt) {
@@ -349,7 +349,7 @@ struct ArtistView: View {
                     .disabled(albums.isEmpty || starting)
                 if let bio = info?.biography.map(Self.plain), !bio.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("About").font(.system(size: 20, weight: .bold).width(.expanded))
+                        Text("About").font(Theme.title(20))
                         Text(bio).font(.subheadline).foregroundStyle(Theme.secondary)
                             .lineLimit(bioOpen ? nil : 4)
                         Button(bioOpen ? "Less" : "More") { withAnimation(.easeInOut) { bioOpen.toggle() } }
@@ -358,7 +358,7 @@ struct ArtistView: View {
                     .padding(.horizontal, 20)
                     .transition(.opacity)
                 }
-                Text("Albums").font(.system(size: 20, weight: .bold).width(.expanded)).padding(.horizontal, 20)
+                Text("Albums").font(Theme.title(20)).padding(.horizontal, 20)
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 22) {
                     ForEach(albums) { a in
                         NavigationLink(value: a) {
@@ -377,7 +377,7 @@ struct ArtistView: View {
                 if loader.loading && albums.isEmpty { ProgressView().frame(maxWidth: .infinity).padding(40) }
                 if let similar = info?.similarArtist, !similar.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Fans Also Like").font(.system(size: 20, weight: .bold).width(.expanded)).padding(.horizontal, 20)
+                        Text("Fans Also Like").font(Theme.title(20)).padding(.horizontal, 20)
                         ScrollView(.horizontal, showsIndicators: false) {
                             LazyHStack(alignment: .top, spacing: 16) {
                                 ForEach(similar) { a in
@@ -399,7 +399,7 @@ struct ArtistView: View {
             }
             .padding(.bottom, 24)
         }
-        .background(Theme.background)
+        .themedBackground()
         .ignoresSafeArea(edges: .top)
         .navigationBarTitleDisplayMode(.inline)
         .task {

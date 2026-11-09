@@ -97,6 +97,22 @@ final class NavigationUITests: PlatterUITestCase {
         shot("31-queued")
     }
 
+    func testSwipingASongAllTheWayLeftQueuesIt() {
+        openFirstAlbum()
+        let row = app.otherElements.matching(identifier: "track-row").element(boundBy: 3)
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5)))
+        waitFor(app.staticTexts["Added to queue"], 5)
+        XCTAssertFalse(app.buttons["swipe-queue"].exists, "closes after queueing")
+    }
+
+    func testTappingASongStillPlaysIt() {
+        openFirstAlbum()
+        app.otherElements.matching(identifier: "track-row").element(boundBy: 4).tap()
+        waitFor(app.otherElements["mini-player"], 10)
+        XCTAssertFalse(app.staticTexts["Added to queue"].exists)
+    }
+
     func testSwipingASongRightDoesNothing() {
         openFirstAlbum()
         let row = app.otherElements.matching(identifier: "track-row").element(boundBy: 2)

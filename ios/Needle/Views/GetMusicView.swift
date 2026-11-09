@@ -206,7 +206,7 @@ struct CatalogAlbumView: View {
             }
             .padding(.bottom, 24)
         }
-        .background(Theme.background)
+        .themedBackground()
         .navigationBarTitleDisplayMode(.inline)
         .task { await loader.load { try await app.helper.catalogAlbum(album.id) } }
     }
@@ -272,7 +272,7 @@ struct DownloadQueueView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Theme.background)
+        .themedBackground()
         .navigationTitle("Download Queue")
         .toolbar {
             if tracks.contains(where: { !$0.isActive }) {

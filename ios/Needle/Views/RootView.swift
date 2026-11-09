@@ -43,7 +43,7 @@ struct RootView: View {
 
     private var main: some View {
         ZStack(alignment: .bottom) {
-            Theme.background.ignoresSafeArea()
+            ThemeBackdrop()
             ZStack {
                 tabContent(.home) { HomeView(openTab: { tab = $0 }) }
                 tabContent(.library) { LibraryView() }
@@ -51,7 +51,7 @@ struct RootView: View {
                 tabContent(.settings) { SettingsView() }
             }
             .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: player.current == nil ? 58 : 128)
+                Color.clear.frame(height: (Look.shared.style.tabBar == .classic ? 58 : 66) + (player.current == nil ? 0 : 70))
             }
 
             VStack(spacing: 8) {
@@ -73,7 +73,10 @@ struct RootView: View {
             }
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: player.current == nil)
         }
-        .fullScreenCover(isPresented: $showNowPlaying) { NowPlayingView().zoomDestination("nowplaying").environment(\.zoomNamespace, zoom) }
+        .lookFonts()
+        .fullScreenCover(isPresented: $showNowPlaying) {
+            NowPlayingView().zoomDestination("nowplaying").environment(\.zoomNamespace, zoom).lookFonts()
+        }
         .environment(\.zoomNamespace, zoom)
         .overlay(alignment: .top) { ErrorToast() }
         .modifier(DeleteConfirm(enabled: !showNowPlaying))
@@ -129,33 +132,82 @@ extension View {
 struct TabBar: View {
     @Binding var tab: AppTab
     var reselect: (AppTab) -> Void = { _ in }
+    @Namespace private var bubble
+
     var body: some View {
-        HStack {
+        let style = Look.shared.style.tabBar
+        HStack(spacing: style == .classic ? 0 : 2) {
             ForEach(AppTab.allCases, id: \.self) { t in
                 Button {
-                    if tab == t { reselect(t) } else { tab = t }
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: t.icon(selected: tab == t))
-                            .font(.system(size: 19, weight: tab == t ? .semibold : .regular))
-                            .symbolRenderingMode(.monochrome)
-                        Text(t.label).font(.system(size: 10, weight: .medium))
-                    }
-                    .foregroundStyle(tab == t ? .white : Theme.tertiary)
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                    if tab == t { reselect(t) } else { withAnimation(.snappy(duration: 0.28)) { tab = t } }
+                } label: { item(t, style) }
+                .buttonStyle(PressScale())
                 .accessibilityIdentifier("tab-\(t.rawValue)")
+                .accessibilityLabel(t.label)
+                .accessibilityAddTraits(tab == t ? .isSelected : [])
             }
         }
-        .padding(.top, 8)
-        .padding(.bottom, 2)
-        .background(
-            LinearGradient(colors: [Theme.background.opacity(0), Theme.background.opacity(0.92), Theme.background],
-                           startPoint: .top, endPoint: .center)
-                .ignoresSafeArea(edges: .bottom)
-        )
+        .modifier(TabBarShell(style: style))
+    }
+
+    @ViewBuilder
+    private func item(_ t: AppTab, _ style: LookTabBar) -> some View {
+        let on = tab == t
+        VStack(spacing: 4) {
+            Image(systemName: t.icon(selected: on))
+                .font(.system(size: style == .dock ? 18 : 19, weight: on ? .semibold : .regular))
+                .symbolRenderingMode(.monochrome)
+                .frame(width: 44, height: style == .classic ? 24 : 30)
+                .background {
+                    if on && style != .classic {
+                        FinishedShape(color: Theme.accent.opacity(style == .dock ? 1 : 0.9), shape: Capsule())
+                            .matchedGeometryEffect(id: "bubble", in: bubble)
+                    }
+                }
+                .foregroundStyle(on && style != .classic ? readableText(on: Theme.accent) : (on ? .white : Theme.tertiary))
+            if style != .floating {
+                Text(t.label).font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(on ? .white : Theme.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, style == .floating ? 8 : 0)
+        .contentShape(Rectangle())
+    }
+}
+
+/// The bar behind the tabs: a fade (Classic), a pill hovering over the screen (Floating), or a glossy dock (Dock).
+struct TabBarShell: ViewModifier {
+    let style: LookTabBar
+    func body(content: Content) -> some View {
+        switch style {
+        case .classic:
+            content
+                .padding(.top, 8)
+                .padding(.bottom, 2)
+                .background(
+                    LinearGradient(colors: [Theme.background.opacity(0), Theme.background.opacity(0.92), Theme.background],
+                                   startPoint: .top, endPoint: .center)
+                        .ignoresSafeArea(edges: .bottom)
+                )
+        case .floating:
+            content
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .finish(Theme.surface, in: Capsule())
+                .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+                .padding(.horizontal, 28)
+                .padding(.bottom, 4)
+        case .dock:
+            content
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+                .finish(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner(22), style: .continuous))
+                .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 2)
+        }
     }
 }
 
@@ -199,14 +251,15 @@ struct MiniPlayer: View {
             .padding(8)
             .padding(.trailing, 4)
             .background {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(LinearGradient(colors: [palette.top, palette.bottom], startPoint: .leading, endPoint: .trailing))
+                miniBackground
                     .overlay(alignment: .bottom) { MiniProgress().padding(.bottom, 2) }
                     .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
             }
             .offset(x: drag * 0.35)
             .contentShape(Rectangle())
             .onTapGesture(perform: open)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("mini-player")
             .gesture(DragGesture(minimumDistance: 14)
                 .onChanged { v in if abs(v.translation.width) > abs(v.translation.height) { drag = v.translation.width } }
                 .onEnded { v in
@@ -224,6 +277,22 @@ struct MiniPlayer: View {
                     AccentStore.shared.albumColor = p.accent
                 }
             }
+        }
+    }
+
+    /// The bar's look: the album's colors, frosted glass tinted by the album, or your accent.
+    @ViewBuilder private var miniBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.corner(16), style: .continuous)
+        switch Look.shared.style.mini {
+        case .album:
+            FinishedShape(color: palette.bottom, shape: shape)
+                .overlay(shape.fill(LinearGradient(colors: [palette.top.opacity(0.9), palette.bottom.opacity(0)],
+                                                   startPoint: .leading, endPoint: .trailing)))
+                .clipShape(shape)
+        case .glass:
+            FinishedShape(color: palette.bottom, shape: shape, finish: .glass)
+        case .accent:
+            FinishedShape(color: Theme.accent.darker(0.45), shape: shape)
         }
     }
 

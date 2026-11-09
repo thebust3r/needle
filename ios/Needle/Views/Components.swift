@@ -1,17 +1,5 @@
 import SwiftUI
 
-enum Theme {
-    static let background = Color(red: 0.055, green: 0.058, blue: 0.075)
-    static let surface = Color(red: 0.10, green: 0.105, blue: 0.13)
-    static let line = Color.white.opacity(0.08)
-    static let secondary = Color.white.opacity(0.58)
-    static let tertiary = Color.white.opacity(0.36)
-    /// Your accent color (Settings), or the playing album's color. Views using it update when it changes.
-    static var accent: Color { AccentStore.shared.color }
-
-    static func title(_ size: CGFloat) -> Font { .system(size: size, weight: .bold).width(.expanded) }
-}
-
 /// A big screen title in the app's wide type.
 struct ScreenTitle: View {
     let text: String
@@ -29,7 +17,7 @@ struct SectionHeader: View {
     var action: (() -> Void)? = nil
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(title).font(.system(size: 20, weight: .bold).width(.expanded))
+            Text(title).font(Theme.title(20))
             Spacer()
             if let action {
                 Button("See all", action: action).font(.subheadline.weight(.medium)).foregroundStyle(Theme.secondary)
@@ -81,6 +69,7 @@ struct TrackRow: View {
     @State private var fired = 0
     @State private var width: CGFloat = 390
     @State private var swipedAt = Date.distantPast
+    @State private var dragging = false
 
     private var isCurrent: Bool { player.current?.id == track.id }
     private var starred: Bool { player.isStarred(track) }
@@ -102,8 +91,10 @@ struct TrackRow: View {
             if dx < 0 { actions.transition(.identity) }
             HStack(spacing: 0) {
                 Button {
+                    // a swipe can end with the finger still on the row: that isn't a tap
+                    if dragging || Date().timeIntervalSince(swipedAt) < 0.4 { return }
                     if dx != 0 { close(); return }
-                    if Date().timeIntervalSince(swipedAt) > 0.35 { action() }
+                    action()
                 } label: { content }
                 .buttonStyle(RowButtonStyle())
                 Menu {
@@ -224,6 +215,7 @@ struct TrackRow: View {
                     if horizontal == true { RowSwipe.shared.open = me }
                 }
                 guard horizontal == true else { return }
+                dragging = true
                 var x = min(0, start + w)
                 let limit = width * 0.92
                 if -x > limit { x = -(limit + (-x - limit) * 0.2) }
@@ -232,7 +224,7 @@ struct TrackRow: View {
                 if f != full { full = f }
             }
             .onEnded { v in
-                defer { horizontal = nil }
+                defer { horizontal = nil; dragging = false }
                 guard horizontal == true else { return }
                 swipedAt = Date()
                 let fling = v.predictedEndTranslation.width - v.translation.width
@@ -349,7 +341,7 @@ struct PlaylistPickerSheet: View {
                 Section {
                     HStack(spacing: 12) {
                         Image(systemName: "plus").font(.title3).foregroundStyle(Theme.accent).frame(width: 44, height: 44)
-                            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner(8), style: .continuous))
                         TextField("New playlist", text: $newName)
                             .focused($typing)
                             .submitLabel(.done)
@@ -380,7 +372,7 @@ struct PlaylistPickerSheet: View {
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
-            .background(Theme.background)
+            .themedBackground()
             .disabled(busy)
             .navigationTitle("Add \(subject)")
             .navigationBarTitleDisplayMode(.inline)
@@ -520,7 +512,7 @@ struct FilledPill: ButtonStyle {
         configuration.label
             .foregroundStyle(text)
             .padding(.vertical, 13)
-            .background(fill, in: Capsule())
+            .finish(fill, in: Capsule())
             .opacity(configuration.isPressed ? 0.8 : 1)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
     }

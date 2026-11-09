@@ -41,7 +41,7 @@ struct ImportView: View {
                     }
                     .padding(.horizontal, 16).padding(.vertical, 12)
                 }
-                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16))
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner(16)))
 
                 HStack(spacing: 12) {
                     Button { Task { await start() } } label: {
@@ -69,7 +69,7 @@ struct ImportView: View {
                             HStack(spacing: 14) {
                                 Image(systemName: j.state == "error" ? "xmark" : "music.note.list")
                                     .font(.title3).foregroundStyle(j.state == "error" ? .red : Theme.accent)
-                                    .frame(width: 46, height: 46).background(Theme.surface, in: RoundedRectangle(cornerRadius: 6))
+                                    .frame(width: 46, height: 46).background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner(6)))
                                     .symbolEffect(.pulse, isActive: j.active)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(j.name.isEmpty ? "Import" : j.name).lineLimit(1)
@@ -90,7 +90,7 @@ struct ImportView: View {
             }
             .padding(20)
         }
-        .background(Theme.background)
+        .themedBackground()
         .navigationTitle("Import Playlist")
         .navigationDestination(item: $opened) { ImportJobView(id: $0.id) }
         .task { await recent.load { try await app.helper.jobs() } }
@@ -135,7 +135,7 @@ struct ImportJobView: View {
                 ProgressView().padding(60)
             }
         }
-        .background(Theme.background)
+        .themedBackground()
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if job != nil {
@@ -226,8 +226,8 @@ struct ImportJobView: View {
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(LinearGradient(colors: [.white.opacity(0.09), .white.opacity(0.03)], startPoint: .topLeading, endPoint: .bottomTrailing),
-                    in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Theme.line))
+                    in: RoundedRectangle(cornerRadius: Theme.corner(16)))
+        .overlay(RoundedRectangle(cornerRadius: Theme.corner(16)).stroke(Theme.line))
     }
 
     private func choice(_ title: String, _ sub: String, primary: Bool, enabled: Bool, action: @escaping () -> Void) -> some View {

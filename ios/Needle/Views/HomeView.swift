@@ -22,53 +22,66 @@ struct HomeView: View {
                 HomeHeader(shuffle: settings.config.isComplete ? { Task { await shuffleAll() } } : nil, shuffling: shuffling)
 
                 if settings.config.isComplete {
-                    ContinueCard()
                     if let err = recent.error, recent.value == nil {
                         StatusView(icon: "wifi.exclamationmark", title: "Can't reach your server", message: err) {
                             Task { await loadAll(force: true) }
                         }
                     }
-                    quickPicks
-                    madeForYou
-                    shelf("New in Your Library", freshAlbums)
-                    WrappedBanner()
                 } else {
                     connectCard
                 }
-
-                if !local.tracks.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        SectionHeader(title: "On This iPhone") { openTab(.library) }
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHStack(spacing: 14) {
-                                ForEach(local.albums.prefix(12)) { a in
-                                    NavigationLink(value: LocalAlbumRoute(name: a.name, artist: a.artist)) {
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            ArtworkView(track: a.tracks.first, size: 128, corner: 10)
-                                            Text(a.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                            Text(a.artist).font(.caption).foregroundStyle(Theme.secondary).lineLimit(1)
-                                        }
-                                        .frame(width: 128)
-                                    }
-                                    .buttonStyle(PressScale())
-                                    .shelfAppear()
-                                }
-                            }
-                            .padding(.horizontal, 20)
-                            .scrollTargetLayout()
-                        }
-                        .scrollTargetBehavior(.viewAligned)
-                    }
+                ForEach(HomeLayout.shared.visible) { sec in
+                    section(sec)
                 }
             }
             .padding(.bottom, 24)
         }
         .scrollsToTopOnReselect(.home)
-        .background(Theme.background)
+        .themedBackground()
         .toolbar(.hidden, for: .navigationBar)
         .withDestinations()
         .refreshable { await loadAll(force: true) }
         .task(id: settings.config) { await loadAll(force: false) }
+    }
+
+    /// One Home section, in the order you arranged them (Settings > Home Layout).
+    @ViewBuilder private func section(_ s: HomeSection) -> some View {
+        let online = settings.config.isComplete
+        switch s {
+        case .continueListening: if online { ContinueCard() }
+        case .quickPicks: if online { quickPicks }
+        case .madeForYou: if online { madeForYou }
+        case .newInLibrary: if online { shelf("New in Your Library", freshAlbums) }
+        case .wrapped: if online { WrappedBanner() }
+        case .onThisIPhone: onThisIPhone
+        }
+    }
+
+    @ViewBuilder private var onThisIPhone: some View {
+        if !local.tracks.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "On This iPhone") { openTab(.library) }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 14) {
+                        ForEach(local.albums.prefix(12)) { a in
+                            NavigationLink(value: LocalAlbumRoute(name: a.name, artist: a.artist)) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ArtworkView(track: a.tracks.first, size: 128, corner: 10)
+                                    Text(a.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                    Text(a.artist).font(.caption).foregroundStyle(Theme.secondary).lineLimit(1)
+                                }
+                                .frame(width: 128)
+                            }
+                            .buttonStyle(PressScale())
+                            .shelfAppear()
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .scrollTargetLayout()
+                }
+                .scrollTargetBehavior(.viewAligned)
+            }
+        }
     }
 
     // MARK: Made for You
@@ -110,7 +123,7 @@ struct HomeView: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner(18), style: .continuous))
         .padding(.horizontal, 20)
     }
 
@@ -267,8 +280,8 @@ struct ContinueCard: View {
                     Image(systemName: "play.circle.fill").font(.system(size: 38)).foregroundStyle(Theme.accent)
                 }
                 .padding(12)
-                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Theme.line))
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner(18), style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.corner(18), style: .continuous).stroke(Theme.line))
                 .padding(.horizontal, 20)
             }
             .buttonStyle(PressScale())
@@ -311,7 +324,7 @@ struct QuickPickTile: View {
         }
         .frame(height: 56)
         .background(.white.opacity(0.07))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.corner(8), style: .continuous))
         .contentShape(Rectangle())
     }
 }
@@ -340,14 +353,14 @@ struct MixArtwork: View {
             LinearGradient(colors: [tint.opacity(0.15), tint.opacity(0.55), .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 2) {
                 Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(tint)
-                Text(mix.title).font(.system(size: size * 0.11, weight: .heavy).width(.expanded)).lineLimit(2)
+                Text(mix.title).font(Theme.title(size * 0.11)).lineLimit(2)
                     .minimumScaleFactor(0.7)
             }
             .foregroundStyle(.white)
             .padding(10)
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.corner(12), style: .continuous))
         .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
     }
 
@@ -371,7 +384,7 @@ struct MixCardPlaceholder: View {
     @State private var glow = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.surface).frame(width: size, height: size)
+            RoundedRectangle(cornerRadius: Theme.corner(12), style: .continuous).fill(Theme.surface).frame(width: size, height: size)
         }
         .opacity(glow ? 0.5 : 1)
         .onAppear { withAnimation(.easeInOut(duration: 0.9).repeatForever()) { glow = true } }

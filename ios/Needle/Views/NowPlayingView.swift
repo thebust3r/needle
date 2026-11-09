@@ -100,7 +100,10 @@ struct NowPlayingView: View {
             }
             VizSettings.shared.engine.setColor(UIColor(pp.accent))
         }
-        .onAppear { EQProcessor.shared.spectrumEnabled = true }
+        .onAppear {
+            EQProcessor.shared.spectrumEnabled = true
+            if Look.shared.style.nowPlaying == .visualizer { viz.on = true }
+        }
         .onDisappear { if !showEQ { EQProcessor.shared.spectrumEnabled = false } }
     }
 
@@ -129,6 +132,7 @@ struct NowPlayingView: View {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.down").font(.title3.weight(.semibold)).frame(width: 44, height: 44)
             }
+            .accessibilityIdentifier("np-close")
             Spacer()
             VStack(spacing: 1) {
                 Text("Playing from").font(.caption2).foregroundStyle(.white.opacity(0.6))
@@ -160,13 +164,13 @@ struct NowPlayingView: View {
 
     private func cover(_ size: CGFloat) -> some View {
         ZStack {
-            ArtworkView(track: player.current, size: size, corner: 16)
+            NowPlayingArt(size: size)
                 .opacity(viz.on ? 0 : 1)
                 .rotation3DEffect(.degrees(viz.on ? -70 : 0), axis: (x: 0, y: 1, z: 0))
             if viz.on {
                 VisualizerView(active: vizShowing && !showVizFull && scenePhase == .active)
                     .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.corner(16), style: .continuous))
                     .overlay(alignment: .bottom) {
                         HStack {
                             Button { viz.cycle() } label: { VizChip(text: viz.label) }

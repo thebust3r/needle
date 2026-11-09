@@ -74,6 +74,36 @@ struct SettingsView: View {
     var body: some View {
         @Bindable var settings = settings
         Form {
+            Section {
+                NavigationLink {
+                    AppearanceView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Label("Appearance", systemImage: "paintbrush.pointed")
+                        Spacer()
+                        Text(Look.shared.style.name).foregroundStyle(Theme.secondary)
+                        Circle().fill(Theme.accent).frame(width: 14, height: 14)
+                    }
+                }
+                .accessibilityIdentifier("settings-appearance")
+                NavigationLink {
+                    HomeLayoutView()
+                } label: {
+                    Label("Home Layout", systemImage: "rectangle.3.group")
+                }
+                .accessibilityIdentifier("settings-home-layout")
+                Toggle("Weather on Home", isOn: $weather.showWeather)
+                if weather.showWeather {
+                    TextField("City", text: $weather.place)
+                        .textInputAutocapitalization(.words).autocorrectionDisabled()
+                        .onSubmit { Task { await weather.refresh(force: true) } }
+                }
+            } header: {
+                Text("Look")
+            } footer: {
+                Text("Pick a look, or make your own: colors, fonts, buttons, the tab bar, and how Now Playing looks.")
+            }
+
             ServerForm(config: $draft)
             if draft != settings.config {
                 Section {
@@ -106,28 +136,6 @@ struct SettingsView: View {
                 Text("Used for importing Spotify playlists. Leave blank: Platter uses your server address (or port 8795 at home).")
             }
 
-            Section {
-                Picker("Accent color", selection: $accent.choice) {
-                    ForEach(AccentStore.Choice.allCases) { c in
-                        Label { Text(c.label) } icon: {
-                            Image(systemName: c == .albumArt ? "photo.fill" : "circle.fill").foregroundStyle(c.color)
-                        }
-                        .tag(c)
-                    }
-                }
-                .pickerStyle(.navigationLink)
-                Toggle("Weather on Home", isOn: $weather.showWeather)
-                if weather.showWeather {
-                    TextField("City", text: $weather.place)
-                        .textInputAutocapitalization(.words).autocorrectionDisabled()
-                        .onSubmit { Task { await weather.refresh(force: true) } }
-                }
-            } header: {
-                Text("Look")
-            } footer: {
-                Text("Match Album Art makes buttons and highlights take on the color of the song that's playing.")
-            }
-
             Section("Storage") {
                 LabeledContent("Downloaded", value: "\(downloads.saved.count) songs · \(ByteCountFormatter.string(fromByteCount: downloads.totalBytes, countStyle: .file))")
                 LabeledContent("On this iPhone", value: "\(local.tracks.count) songs")
@@ -144,7 +152,7 @@ struct SettingsView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .background(Theme.background)
+        .themedBackground()
         .navigationTitle("Settings")
         .onAppear { draft = settings.config }
     }
@@ -172,7 +180,7 @@ struct OnboardingView: View {
                     }
                 }
                 .scrollContentBackground(.hidden)
-                .background(Theme.background)
+                .themedBackground()
                 .navigationTitle("Your Server")
                 .toolbar { Button("Back") { showForm = false } }
             }
@@ -183,7 +191,7 @@ struct OnboardingView: View {
                     Spacer()
                     HStack(spacing: 14) {
                         Image("Logo").resizable().frame(width: 64, height: 64)
-                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.corner(15), style: .continuous))
                             .shadow(color: .black.opacity(0.4), radius: 12, y: 8)
                         Text("Platter").font(Theme.title(26))
                     }

@@ -94,7 +94,7 @@ struct ScrewSheet: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12).padding(.vertical, 10)
-            .background(selected ? AnyShapeStyle(tint) : AnyShapeStyle(.white.opacity(0.08)), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(selected ? AnyShapeStyle(tint) : AnyShapeStyle(.white.opacity(0.08)), in: RoundedRectangle(cornerRadius: Theme.corner(12), style: .continuous))
             .foregroundStyle(selected ? .black : .white)
         }
         .buttonStyle(PressScale())

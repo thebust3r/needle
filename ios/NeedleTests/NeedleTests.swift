@@ -750,15 +750,137 @@ final class ExtrasTests: XCTestCase {
         XCTAssertEqual(a.size, CGSize(width: 64, height: 64), "small soft image, stretched by the screen")
     }
 
-    @MainActor func testAccentFollowsSetting() {
-        let s = AccentStore.shared
-        let old = s.choice
-        s.choice = .red
-        XCTAssertEqual(Theme.accent, AccentStore.Choice.red.color)
-        s.choice = .albumArt
-        s.albumColor = .yellow
-        XCTAssertEqual(Theme.accent, .yellow)
-        s.choice = old
+    @MainActor func testAccentFollowsTheLook() {
+        let look = Look.shared
+        let old = look.style
+        look.use(.neon)
+        XCTAssertEqual(RGBA(Theme.accent).r, LookStyle.neon.accent.r, accuracy: 0.01)
+        XCTAssertEqual(RGBA(Theme.accent).b, LookStyle.neon.accent.b, accuracy: 0.01)
+        var s = LookStyle.glow
+        s.followArt = true
+        look.use(s)
+        AccentStore.shared.albumColor = Color(.sRGB, red: 1, green: 1, blue: 0, opacity: 1)
+        XCTAssertEqual(RGBA(Theme.accent).g, 1, accuracy: 0.01)
+        XCTAssertEqual(RGBA(Theme.accent).b, 0, accuracy: 0.01)
+        AccentStore.shared.albumColor = nil
+        look.use(old)
+    }
+}
+
+// MARK: - Looks (themes) and Home layout
+
+final class LookTests: XCTestCase {
+    func freshDefaults() -> UserDefaults {
+        let name = "look-tests-\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: name)!
+        d.removePersistentDomain(forName: name)
+        return d
+    }
+
+    func testEveryPresetSavesAndLoadsTheSame() throws {
+        for p in LookStyle.presets {
+            let data = try JSONEncoder().encode(p)
+            let back = try JSONDecoder().decode(LookStyle.self, from: data)
+            XCTAssertEqual(back, p, p.name)
+        }
+        XCTAssertEqual(Set(LookStyle.presets.map(\.id)).count, LookStyle.presets.count, "preset ids are unique")
+    }
+
+    func testOldSavedLooksStillLoad() throws {
+        // a look saved before some settings existed: the missing ones come from the default look
+        let json = #"{"id":"x","name":"Old","background":{"r":0.1,"g":0.1,"b":0.1,"a":1},"accent":{"r":1,"g":0,"b":0,"a":1}}"#
+        let s = try JSONDecoder().decode(LookStyle.self, from: Data(json.utf8))
+        XCTAssertEqual(s.name, "Old")
+        XCTAssertEqual(s.accent, RGBA(1, 0, 0))
+        XCTAssertEqual(s.nowPlaying, LookStyle.chrome.nowPlaying)
+        XCTAssertEqual(s.tabBar, LookStyle.chrome.tabBar)
+        // and an unknown option from a newer version doesn't break loading
+        let future = #"{"id":"y","name":"New","font":"comic-sans","finish":"chrome-plated"}"#
+        let f = try JSONDecoder().decode(LookStyle.self, from: Data(future.utf8))
+        XCTAssertEqual(f.font, LookStyle.chrome.font)
+        XCTAssertEqual(f.finish, LookStyle.chrome.finish)
+    }
+
+    func testEditingAPresetMakesItYourOwn() {
+        let look = Look(defaults: freshDefaults())
+        look.use(.analog)
+        look.edit { $0.finish = .glass }
+        XCTAssertTrue(look.style.custom)
+        XCTAssertNotEqual(look.style.id, LookStyle.analog.id, "the built-in look itself isn't changed")
+        XCTAssertEqual(look.style.finish, .glass)
+        XCTAssertEqual(look.style.font, LookStyle.analog.font, "everything else stays")
+        XCTAssertEqual(LookStyle.analog.finish, .glossy)
+    }
+
+    func testSavedLooksAreRemembered() {
+        let d = freshDefaults()
+        let look = Look(defaults: d)
+        look.use(.burned)
+        look.edit { $0.roundness = 0.2 }
+        look.saveCurrent(named: "  Square CD  ")
+        XCTAssertEqual(look.saved.first?.name, "Square CD")
+        let again = Look(defaults: d)
+        XCTAssertEqual(again.style.roundness, 0.2, accuracy: 0.001)
+        XCTAssertEqual(again.saved.count, 1)
+        // saving again replaces it instead of adding a copy
+        again.saveCurrent(named: "Square CD 2")
+        XCTAssertEqual(again.saved.count, 1)
+        again.delete(again.saved[0])
+        XCTAssertTrue(Look(defaults: d).saved.isEmpty)
+    }
+
+    func testBrightBackgroundsAreDarkenedSoTextStaysReadable() {
+        var s = LookStyle.classic
+        s.background = RGBA(0.95, 0.95, 0.9)
+        XCTAssertLessThan(s.safeBackground.luminance, 0.25)
+        s.background = RGBA(0.05, 0.1, 0.2)
+        XCTAssertEqual(s.safeBackground, s.background, "dark colors are left alone")
+    }
+
+    func testColorsSurviveTheRoundTrip() {
+        let c = RGBA(0.2, 0.4, 0.6)
+        XCTAssertEqual(RGBA(c.color).r, 0.2, accuracy: 0.01)
+        XCTAssertEqual(RGBA(c.color).b, 0.6, accuracy: 0.01)
+        XCTAssertEqual(c.mixed(.white, 1), .white)
+        XCTAssertEqual(c.mixed(.black, 0), c)
+    }
+
+    func testTextColorOnAccents() {
+        XCTAssertEqual(readableText(on: Color(.sRGB, red: 0.5, green: 0.9, blue: 1, opacity: 1)), .black)
+        XCTAssertEqual(readableText(on: Color(.sRGB, red: 0.3, green: 0.05, blue: 0.2, opacity: 1)), .white)
+    }
+
+    func testHomeLayoutOrderAndHiding() {
+        let d = freshDefaults()
+        let h = HomeLayout(defaults: d)
+        XCTAssertEqual(h.order, HomeSection.allCases)
+        h.move(from: IndexSet(integer: HomeSection.allCases.firstIndex(of: .wrapped)!), to: 0)
+        h.setShown(.quickPicks, false)
+        let again = HomeLayout(defaults: d)
+        XCTAssertEqual(again.order.first, .wrapped)
+        XCTAssertFalse(again.visible.contains(.quickPicks))
+        XCTAssertEqual(again.visible.count, HomeSection.allCases.count - 1)
+        again.reset()
+        XCTAssertEqual(HomeLayout(defaults: d).order, HomeSection.allCases)
+    }
+
+    func testNewHomeSectionsShowUpForPeopleWhoArrangedTheirs() {
+        let d = freshDefaults()
+        d.set(["wrapped", "quickPicks"], forKey: "home.order")
+        let h = HomeLayout(defaults: d)
+        XCTAssertEqual(Array(h.order.prefix(2)), [.wrapped, .quickPicks])
+        XCTAssertEqual(Set(h.order), Set(HomeSection.allCases), "sections they hadn't seen are added at the end")
+    }
+
+    func testSpinCarriesOnWhereItStopped() {
+        var s = Spin(degreesPerSecond: 100)
+        let t0 = Date(timeIntervalSince1970: 1000)
+        s.set(running: true, at: t0)
+        XCTAssertEqual(s.angle(at: t0.addingTimeInterval(1)), 100, accuracy: 0.001)
+        s.set(running: false, at: t0.addingTimeInterval(1))
+        XCTAssertEqual(s.angle(at: t0.addingTimeInterval(50)), 100, accuracy: 0.001, "stays put while paused")
+        s.set(running: true, at: t0.addingTimeInterval(50))
+        XCTAssertEqual(s.angle(at: t0.addingTimeInterval(50.5)), 150, accuracy: 0.001, "no jump when it starts again")
     }
 }
 

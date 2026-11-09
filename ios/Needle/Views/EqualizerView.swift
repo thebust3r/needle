@@ -23,7 +23,7 @@ struct EqualizerView: View {
                     bandValues
 
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Presets").font(.system(size: 18, weight: .bold).width(.expanded))
+                        Text("Presets").font(Theme.title(18))
                             .padding(.horizontal, 20)
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
@@ -72,7 +72,7 @@ struct EqualizerView: View {
                         .tint(tint)
                     }
                     .padding(18)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.corner(18), style: .continuous))
                     .padding(.horizontal, 16)
                     .disabled(!eq.enabled)
                 }
@@ -129,7 +129,7 @@ struct EQGraph: View {
         GeometryReader { g in
             let size = g.size
             ZStack {
-                RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.black.opacity(0.35))
+                RoundedRectangle(cornerRadius: Theme.corner(20), style: .continuous).fill(Color.black.opacity(0.35))
                 grid(size)
                 TimelineView(.animation(minimumInterval: 1 / 30)) { _ in
                     spectrum(size, EQProcessor.shared.spectrum(bins: 72))
@@ -202,7 +202,7 @@ struct EQGraph: View {
                 ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(.white.opacity(0.07 + Double(v) * 0.1)))
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.corner(20), style: .continuous))
     }
 
     private func curvePath(_ size: CGSize) -> Path {
@@ -229,7 +229,7 @@ struct EQGraph: View {
             line.stroke(tint, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)).blur(radius: 8).opacity(0.8)
             line.stroke(tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.corner(20), style: .continuous))
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: eq.gains)
     }
 

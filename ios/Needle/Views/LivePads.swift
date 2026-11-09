@@ -42,8 +42,8 @@ struct LivePads: View {
             Text(sub).font(.system(size: 10)).opacity(0.6).lineLimit(1).minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, minHeight: 52)
-        .background(isDown ? AnyShapeStyle(tint) : AnyShapeStyle(.white.opacity(0.09)), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.08)))
+        .background(isDown ? AnyShapeStyle(tint) : AnyShapeStyle(.white.opacity(0.09)), in: RoundedRectangle(cornerRadius: Theme.corner(12), style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.corner(12), style: .continuous).stroke(.white.opacity(0.08)))
         .foregroundStyle(isDown ? .black : .white)
         .scaleEffect(isDown ? 0.94 : 1)
         .animation(.spring(response: 0.18, dampingFraction: 0.7), value: isDown)

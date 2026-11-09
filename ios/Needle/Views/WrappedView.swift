@@ -33,7 +33,7 @@ struct WrappedView: View {
             }
             .padding(.bottom, 30)
         }
-        .background(Theme.background)
+        .themedBackground()
         .navigationBarTitleDisplayMode(.inline)
         .task {
             all = await PlayHistory.shared.everything()
@@ -51,8 +51,8 @@ struct WrappedView: View {
             Text(w.period == .all ? "ALL TIME ON PLATTER" : "YOUR \(w.label.uppercased()) SO FAR")
                 .font(.caption.weight(.bold)).tracking(0.6).opacity(0.85)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(big.0).font(.system(size: 72, weight: .heavy).width(.expanded)).minimumScaleFactor(0.5).lineLimit(1)
-                Text(big.1).font(.system(size: 22, weight: .heavy).width(.expanded))
+                Text(big.0).font(Theme.title(72)).minimumScaleFactor(0.5).lineLimit(1)
+                Text(big.1).font(Theme.title(22))
             }
             Text("of music: \(w.plays) plays, \(w.songs) different songs by \(w.artists) artists.")
                 .font(.subheadline).opacity(0.92)
@@ -70,7 +70,7 @@ struct WrappedView: View {
         .foregroundStyle(.white)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
-        .background(Self.brand, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(Self.brand, in: RoundedRectangle(cornerRadius: Theme.corner(20), style: .continuous))
 
         card("Top Songs") {
             ForEach(Array(w.topSongs.enumerated()), id: \.element.id) { i, s in
@@ -96,13 +96,13 @@ struct WrappedView: View {
         if let p = w.persona {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Your listening personality").font(.caption.weight(.semibold)).foregroundStyle(Theme.secondary)
-                Text(p.name).font(.system(size: 34, weight: .heavy).width(.expanded))
+                Text(p.name).font(Theme.title(34))
                     .foregroundStyle(LinearGradient(colors: [Theme.accent, Color(red: 0.66, green: 0.55, blue: 1)], startPoint: .leading, endPoint: .trailing))
                 Text("\(Int((p.share * 100).rounded()))% \(p.line).").font(.subheadline).foregroundStyle(Theme.secondary)
                 let maxH = max(1, w.hours.max() ?? 1)
                 HStack(alignment: .bottom, spacing: 3) {
                     ForEach(0..<24, id: \.self) { h in
-                        RoundedRectangle(cornerRadius: 2)
+                        RoundedRectangle(cornerRadius: Theme.corner(2))
                             .fill(LinearGradient(colors: [Color(red: 0.66, green: 0.55, blue: 1), Theme.accent], startPoint: .top, endPoint: .bottom))
                             .frame(height: max(3, 70 * CGFloat(w.hours[h]) / CGFloat(maxH)))
                     }
@@ -119,7 +119,7 @@ struct WrappedView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(LinearGradient(colors: [Color(red: 0.11, green: 0.11, blue: 0.23), Color(red: 0.06, green: 0.07, blue: 0.11)],
                                        startPoint: .topLeading, endPoint: .bottomTrailing),
-                        in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: Theme.corner(20), style: .continuous))
         }
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
             tile("Longest streak", "\(w.longestStreak)", "day\(w.longestStreak == 1 ? "" : "s") in a row")
@@ -135,12 +135,12 @@ struct WrappedView: View {
 
     private func card<C: View>(_ title: String, center: Bool = false, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: center ? .center : .leading, spacing: 8) {
-            Text(title).font(.system(size: 20, weight: .heavy).width(.expanded)).frame(maxWidth: .infinity, alignment: center ? .center : .leading)
+            Text(title).font(Theme.title(20)).frame(maxWidth: .infinity, alignment: center ? .center : .leading)
             content()
         }
         .padding(20)
         .frame(maxWidth: .infinity)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner(20), style: .continuous))
     }
 
     private func row(_ n: Int, cover: String?, round: Bool, title: String, sub: String, trailing: String?) -> some View {
@@ -160,12 +160,12 @@ struct WrappedView: View {
     private func tile(_ label: String, _ value: String, _ sub: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption.weight(.semibold)).foregroundStyle(Theme.secondary)
-            Text(value).font(.system(size: 30, weight: .heavy).width(.expanded)).lineLimit(1).minimumScaleFactor(0.6)
+            Text(value).font(Theme.title(30)).lineLimit(1).minimumScaleFactor(0.6)
             Text(sub).font(.caption).foregroundStyle(Theme.secondary).lineLimit(2)
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner(18), style: .continuous))
     }
 }
 
@@ -179,7 +179,7 @@ struct WrappedBanner: View {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 2) {
                             Label("WRAPPED", systemImage: "sparkles").font(.caption.weight(.bold)).opacity(0.85)
-                            Text("Your \(w.label) so far").font(.system(size: 19, weight: .heavy).width(.expanded))
+                            Text("Your \(w.label) so far").font(Theme.title(19))
                             let h = w.minutes >= 120 ? "\(Int((Double(w.minutes) / 60).rounded())) hours" : "\(w.minutes) minutes"
                             Text(h + (w.topArtists.first.map { " · \($0.name) on top" } ?? "")).font(.footnote).opacity(0.9).lineLimit(1)
                         }
@@ -188,7 +188,7 @@ struct WrappedBanner: View {
                     }
                     .foregroundStyle(.white)
                     .padding(16)
-                    .background(WrappedView.brand, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(WrappedView.brand, in: RoundedRectangle(cornerRadius: Theme.corner(16), style: .continuous))
                     .shadow(color: Color(red: 0.48, green: 0.30, blue: 1).opacity(0.3), radius: 14, y: 8)
                 }
                 .buttonStyle(PressScale())

@@ -61,15 +61,15 @@ struct TurntableView: View {
             player.tapeStop(stopped)
         } label: {
             Text(stopped ? "START" : "STOP")
-                .font(.system(size: 12, weight: .heavy).width(.expanded)).tracking(1)
+                .font(Theme.title(12)).tracking(1)
                 .frame(minWidth: 64, minHeight: 34)
                 .padding(.horizontal, 10)
                 .foregroundStyle(stopped ? Color.black : Color(white: 0.92))
                 .background(
                     LinearGradient(colors: stopped ? [Color(red: 1, green: 0.54, blue: 0.54), Color(red: 0.88, green: 0.33, blue: 0.33)]
                                                    : [Color(white: 0.23), Color(white: 0.14)], startPoint: .top, endPoint: .bottom),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(.white.opacity(0.12)))
+                    in: RoundedRectangle(cornerRadius: Theme.corner(8), style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.corner(8), style: .continuous).stroke(.white.opacity(0.12)))
                 .shadow(color: .black.opacity(0.45), radius: 7, y: 6)
         }
         .buttonStyle(PressScale())

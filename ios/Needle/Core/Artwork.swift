@@ -169,7 +169,7 @@ struct ArtworkView: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.corner(corner), style: .continuous))
         .task(id: key) {
             let px = Int(size * UIScreen.main.scale)
             let img: UIImage?

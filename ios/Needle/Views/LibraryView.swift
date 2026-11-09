@@ -72,7 +72,7 @@ struct LibraryView: View {
             }
             .padding(.bottom, 24)
         }
-        .background(Theme.background)
+        .themedBackground()
         .toolbar(.hidden, for: .navigationBar)
         .withDestinations()
     }
@@ -126,7 +126,7 @@ struct AlbumsGridView: View {
             if loading { ProgressView().padding() }
             if let error { StatusView(icon: "wifi.exclamationmark", title: "Couldn't load albums", message: error) { Task { await reload() } } }
         }
-        .background(Theme.background)
+        .themedBackground()
         .navigationTitle("Albums")
         .toolbar {
             Menu {
@@ -170,11 +170,11 @@ struct ArtistsListView: View {
                     }
                 }
             }
-            .listRowBackground(Theme.background)
+            .listRowBackground(Color.clear)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Theme.background)
+        .themedBackground()
         .searchable(text: $filter, prompt: "Filter artists")
         .navigationTitle("Artists")
         .overlay { if loader.loading && loader.value == nil { ProgressView() } }
@@ -199,11 +199,11 @@ struct PlaylistsListView: View {
                     }
                 }
             }
-            .listRowBackground(Theme.background)
+            .listRowBackground(Color.clear)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Theme.background)
+        .themedBackground()
         .navigationTitle("Playlists")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -264,7 +264,7 @@ struct PlaylistView: View {
             }
             .padding(.bottom, 20)
         }
-        .background(Theme.background)
+        .themedBackground()
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { Menu { TrackMenu(tracks: tracks) } label: { Image(systemName: "ellipsis.circle") } }
         .task { await loader.load { try await app.client.playlist(playlist.id).map(Track.init(song:)) } }
@@ -323,7 +323,7 @@ struct FavoritesView: View {
             }
             .padding(.vertical, 12)
         }
-        .background(Theme.background)
+        .themedBackground()
         .navigationTitle("Favorites")
         .task { await loader.load { try await app.client.starred() } }
     }
@@ -346,18 +346,18 @@ struct DownloadsView: View {
                 } footer: {
                     Text("\(tracks.count) songs · \(ByteCountFormatter.string(fromByteCount: downloads.totalBytes, countStyle: .file)). Plays with no connection.")
                 }
-                .listRowBackground(Theme.background)
+                .listRowBackground(Color.clear)
             }
             ForEach(Array(tracks.enumerated()), id: \.element.id) { i, t in
                 TrackRow(track: t, swipes: false) { player.play(tracks, startAt: i) }
                     .listRowInsets(EdgeInsets())
-                    .listRowBackground(Theme.background)
+                    .listRowBackground(Color.clear)
             }
             .onDelete { offsets in downloads.remove(offsets.map { tracks[$0] }) }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Theme.background)
+        .themedBackground()
         .navigationTitle("Downloaded")
         .overlay {
             if tracks.isEmpty {
@@ -410,7 +410,7 @@ struct OnPhoneView: View {
             }
             .padding(.vertical, 12)
         }
-        .background(Theme.background)
+        .themedBackground()
         .navigationTitle("On This iPhone")
         .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { Task { await local.importFiles(urls) } }
