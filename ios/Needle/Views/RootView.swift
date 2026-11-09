@@ -61,8 +61,15 @@ struct RootView: View {
                         .padding(.horizontal, 10)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                TabBar(tab: $tab)
-                    .sensoryFeedback(.selection, trigger: tab)
+                TabBar(tab: $tab) { t in
+                    // tapping the tab you're on goes all the way back to its first page
+                    if !(paths[t]?.isEmpty ?? true) {
+                        withAnimation(.snappy(duration: 0.3)) { paths[t] = NavigationPath() }
+                    } else {
+                        TabReselect.shared.fire(t)
+                    }
+                }
+                .sensoryFeedback(.selection, trigger: tab)
             }
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: player.current == nil)
         }
@@ -94,13 +101,39 @@ struct RootView: View {
     }
 }
 
+/// "You tapped the tab you're already on, at its first page": screens scroll back to the top.
+@Observable final class TabReselect {
+    static let shared = TabReselect()
+    private(set) var tab: AppTab?
+    private(set) var count = 0
+    func fire(_ t: AppTab) { tab = t; count += 1 }
+}
+
+/// Put `ScrollTopAnchor()` first inside a tab's main scroll view; tapping that tab again scrolls back up to it.
+struct ScrollTopAnchor: View {
+    var body: some View { Color.clear.frame(height: 0).id("scroll-top") }
+}
+
+extension View {
+    func scrollsToTopOnReselect(_ tab: AppTab) -> some View {
+        ScrollViewReader { proxy in
+            self.onChange(of: TabReselect.shared.count) { _, _ in
+                if TabReselect.shared.tab == tab {
+                    withAnimation(.snappy(duration: 0.35)) { proxy.scrollTo("scroll-top", anchor: .top) }
+                }
+            }
+        }
+    }
+}
+
 struct TabBar: View {
     @Binding var tab: AppTab
+    var reselect: (AppTab) -> Void = { _ in }
     var body: some View {
         HStack {
             ForEach(AppTab.allCases, id: \.self) { t in
                 Button {
-                    tab = t
+                    if tab == t { reselect(t) } else { tab = t }
                 } label: {
                     VStack(spacing: 4) {
                         Image(systemName: t.icon(selected: tab == t))
@@ -113,6 +146,7 @@ struct TabBar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("tab-\(t.rawValue)")
             }
         }
         .padding(.top, 8)

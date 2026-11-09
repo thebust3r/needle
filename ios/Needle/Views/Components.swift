@@ -53,8 +53,14 @@ struct AlbumCard: View {
     }
 }
 
-/// One song in a list. Swipe right to add it to the queue, swipe left to favorite it (like Spotify).
-/// ••• (or a long press) has the rest: Play Next, Add to Playlist, Download…
+/// Only one song row has its swipe buttons showing at a time.
+@Observable final class RowSwipe {
+    static let shared = RowSwipe()
+    var open: UUID?
+}
+
+/// One song in a list. Swipe left to show Favorite and Add to Queue (swipe all the way to queue it right away);
+/// swiping right is left alone so it always means "go back". ••• (or a long press) has everything else.
 struct TrackRow: View {
     @Environment(Player.self) private var player
     @Environment(Downloads.self) private var downloads
@@ -67,15 +73,21 @@ struct TrackRow: View {
     var swipes = true
     let action: () -> Void
 
+    @State private var me = UUID()
     @State private var dx: CGFloat = 0
+    @State private var start: CGFloat = 0
     @State private var horizontal: Bool? = nil
-    @State private var armed = false
+    @State private var full = false
     @State private var fired = 0
+    @State private var width: CGFloat = 390
     @State private var swipedAt = Date.distantPast
 
     private var isCurrent: Bool { player.current?.id == track.id }
     private var starred: Bool { player.isStarred(track) }
-    private static let trigger: CGFloat = 80
+    /// How far the buttons slide out.
+    static let reveal: CGFloat = 148
+    /// Drags that start this close to the left edge belong to the system's back swipe.
+    static let edge: CGFloat = 28
 
     var body: some View {
         if Deleter.shared.deleted.contains(track.id) {
@@ -86,11 +98,12 @@ struct TrackRow: View {
     }
 
     private var row: some View {
-        ZStack {
-            swipeBackground
+        ZStack(alignment: .trailing) {
+            if dx < 0 { actions.transition(.identity) }
             HStack(spacing: 0) {
                 Button {
-                    if Date().timeIntervalSince(swipedAt) > 0.4 { action() }
+                    if dx != 0 { close(); return }
+                    if Date().timeIntervalSince(swipedAt) > 0.35 { action() }
                 } label: { content }
                 .buttonStyle(RowButtonStyle())
                 Menu {
@@ -104,17 +117,22 @@ struct TrackRow: View {
                 }
                 .padding(.trailing, 8)
                 .accessibilityLabel("More")
+                .accessibilityIdentifier("track-more")
             }
             .background(Theme.background.opacity(dx == 0 ? 0 : 1))
             .offset(x: dx)
         }
         .clipped()
+        .background(GeometryReader { g in Color.clear.onAppear { width = g.size.width }.onChange(of: g.size.width) { _, w in width = w } })
         .contextMenu { TrackMenu(tracks: [track], onRemove: onRemove) }
         .simultaneousGesture(swipe, including: swipes ? .all : .subviews)
-        .sensoryFeedback(.impact(weight: .medium), trigger: armed) { _, now in now }
+        .onChange(of: RowSwipe.shared.open) { _, id in if id != me && dx != 0 { close() } }
+        .sensoryFeedback(.impact(weight: .medium), trigger: full) { _, now in now }
         .sensoryFeedback(.success, trigger: fired)
-        .accessibilityAction(named: "Add to Queue") { player.addToQueue([track]) }
-        .accessibilityAction(named: starred ? "Remove from Favorites" : "Add to Favorites") { player.setStarred([track], !starred) }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("track-row")
+        .accessibilityAction(named: "Add to Queue") { queue() }
+        .accessibilityAction(named: starred ? "Remove from Favorites" : "Add to Favorites") { favorite() }
     }
 
     private var content: some View {
@@ -159,62 +177,94 @@ struct TrackRow: View {
         .contentShape(Rectangle())
     }
 
-    /// What shows under the row as you drag it.
-    private var swipeBackground: some View {
-        let right = dx > 0
-        let fill: Color = armed ? (right ? Color(red: 0.12, green: 0.62, blue: 0.33) : Theme.accent) : Color.white.opacity(0.07)
-        return HStack {
-            if right {
-                Label("Add to Queue", systemImage: "text.append")
-                Spacer()
-            } else {
-                Spacer()
-                Label(starred ? "Unfavorite" : "Favorite", systemImage: starred ? "heart.slash.fill" : "heart.fill")
+    /// Favorite and Add to Queue, under the row on the right.
+    private var actions: some View {
+        let shown = min(-dx, max(Self.reveal, -dx))
+        return HStack(spacing: 0) {
+            Button { favorite(); close() } label: {
+                VStack(spacing: 3) {
+                    Image(systemName: starred ? "heart.slash.fill" : "heart.fill").font(.body.weight(.semibold))
+                    Text(starred ? "Unfavorite" : "Favorite").font(.caption2.weight(.bold))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Theme.accent)
+                .foregroundStyle(Color.black)
             }
+            .frame(width: full ? 0 : shown / 2)
+            .opacity(full || track.isLocal ? 0 : 1)
+            .accessibilityIdentifier("swipe-favorite")
+            Button { queue(); close() } label: {
+                VStack(spacing: 3) {
+                    Image(systemName: "text.append").font(.body.weight(.semibold))
+                    Text("Queue").font(.caption2.weight(.bold))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(red: 0.12, green: 0.62, blue: 0.33))
+                .foregroundStyle(Color.white)
+            }
+            .frame(width: full ? shown : shown / 2)
+            .accessibilityIdentifier("swipe-queue")
         }
-        .font(.subheadline.weight(.bold))
-        .foregroundStyle(armed && !right ? Color.black : Color.white)
-        .padding(.horizontal, 22)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(fill)
-        .opacity(dx == 0 ? 0 : 1)
-        .animation(.easeOut(duration: 0.12), value: armed)
+        .buttonStyle(.plain)
+        .frame(width: shown)
+        .animation(.spring(response: 0.25, dampingFraction: 0.85), value: full)
     }
 
     private var swipe: some Gesture {
-        DragGesture(minimumDistance: 14, coordinateSpace: .local)
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .onChanged { v in
                 let w = v.translation.width, h = v.translation.height
                 if horizontal == nil {
-                    // decide once per drag: sideways means swipe, up/down means the list is scrolling
-                    horizontal = abs(w) > abs(h) * 1.4
+                    // decide once per drag: up/down is the list scrolling; a drag from the left edge, or a
+                    // rightward drag on a closed row, is the back swipe; only a leftward drag (or closing) is ours
+                    let sideways = abs(w) > abs(h) * 1.4
+                    let fromEdge = v.startLocation.x < Self.edge
+                    horizontal = sideways && !fromEdge && (w < 0 || dx < 0)
+                    start = dx
+                    if horizontal == true { RowSwipe.shared.open = me }
                 }
                 guard horizontal == true else { return }
-                let limit: CGFloat = 150
-                let x = abs(w) > limit ? (w > 0 ? 1 : -1) * (limit + (abs(w) - limit) * 0.25) : w
+                var x = min(0, start + w)
+                let limit = width * 0.92
+                if -x > limit { x = -(limit + (-x - limit) * 0.2) }
                 dx = x
-                let on = abs(x) > Self.trigger
-                if on != armed { armed = on }
+                let f = -x > max(Self.reveal + 60, width * 0.55)
+                if f != full { full = f }
             }
-            .onEnded { _ in
-                defer {
-                    horizontal = nil
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) { dx = 0 }
-                    armed = false
-                }
+            .onEnded { v in
+                defer { horizontal = nil }
                 guard horizontal == true else { return }
                 swipedAt = Date()
-                guard armed else { return }
-                fired += 1
-                if dx > 0 {
-                    player.addToQueue([track])
-                    player.errorMessage = "Added to queue"
-                } else if !track.isLocal {
-                    let on = !starred
-                    player.setStarred([track], on)
-                    player.errorMessage = on ? "Added to Favorites" : "Removed from Favorites"
+                let fling = v.predictedEndTranslation.width - v.translation.width
+                if full {
+                    queue()
+                    close()
+                } else if -dx > Self.reveal * 0.45 || (fling < -120 && -dx > 30) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { dx = -Self.reveal }
+                } else {
+                    close()
                 }
             }
+    }
+
+    private func close() {
+        full = false
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { dx = 0 }
+        if RowSwipe.shared.open == me { RowSwipe.shared.open = nil }
+    }
+
+    private func queue() {
+        fired += 1
+        player.addToQueue([track])
+        player.errorMessage = "Added to queue"
+    }
+
+    private func favorite() {
+        guard !track.isLocal else { return }
+        fired += 1
+        let on = !starred
+        player.setStarred([track], on)
+        player.errorMessage = on ? "Added to Favorites" : "Removed from Favorites"
     }
 }
 

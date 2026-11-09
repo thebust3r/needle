@@ -18,6 +18,7 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
+                ScrollTopAnchor().padding(.bottom, -26)
                 HomeHeader(shuffle: settings.config.isComplete ? { Task { await shuffleAll() } } : nil, shuffling: shuffling)
 
                 if settings.config.isComplete {
@@ -62,6 +63,7 @@ struct HomeView: View {
             }
             .padding(.bottom, 24)
         }
+        .scrollsToTopOnReselect(.home)
         .background(Theme.background)
         .toolbar(.hidden, for: .navigationBar)
         .withDestinations()

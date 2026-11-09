@@ -17,6 +17,7 @@ targets:
     scheme:
       testTargets:
         - NeedleTests
+        - NeedleUITests
     info:
       path: Needle/Info.plist
       properties:
@@ -56,4 +57,18 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.thebust3r.needle.tests
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/Needle.app/Needle
         BUNDLE_LOADER: $(TEST_HOST)
+        CODE_SIGNING_ALLOWED: "NO"
+
+  NeedleUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - NeedleUITests
+    dependencies:
+      - target: Needle
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: com.thebust3r.needle.uitests
+        TEST_TARGET_NAME: Needle
         CODE_SIGNING_ALLOWED: "NO"

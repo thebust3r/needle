@@ -12,6 +12,13 @@ on:
         description: "Run the app tests too"
         type: boolean
         default: true
+      ui:
+        description: "Run the UI tests and publish screenshots"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write     # the UI tests publish their screenshots to the ci-screenshots branch
 
 concurrency:
   group: ios-build
@@ -24,6 +31,7 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
       RUN_TESTS: ${{ (github.event_name == 'workflow_dispatch' && inputs.tests) || contains(github.event.head_commit.message, '[test]') }}
+      RUN_UI: ${{ (github.event_name == 'workflow_dispatch' && inputs.ui) || contains(github.event.head_commit.message, '[ui]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +49,7 @@ jobs:
           set +e
           DEVICE=$(xcrun simctl list devices available | grep -E "iPhone 1[5-7]( Pro)? \(" | head -1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')
           echo "Simulator: $DEVICE"
-          xcodebuild test -project ios/Needle.xcodeproj -scheme Needle -configuration Debug \
+          xcodebuild test -project ios/Needle.xcodeproj -scheme Needle -configuration Debug -only-testing:NeedleTests \
             -destination "id=$DEVICE" -derivedDataPath testbuild CODE_SIGNING_ALLOWED=NO > test.log 2>&1
           status=$?
           # results show up as notes on the run
@@ -56,6 +64,39 @@ jobs:
           if [ -s failures.txt ]; then
             split -l 12 failures.txt fpart_
             for f in fpart_*; do msg=$(sed 's/%/%25/g' "$f" | awk '{printf "%s%%0A", $0}'); echo "::error title=Test failures $f::$msg"; done
+          fi
+          exit $status
+
+      - name: UI tests on a simulator, with screenshots
+        if: env.RUN_UI == 'true'
+        shell: bash
+        run: |
+          set +e
+          python3 -m pip install --quiet --break-system-packages pillow || python3 -m pip install --quiet --user pillow
+          PORT=8796 python3 web/tests/fake_server.py web/site > fake.log 2>&1 &
+          for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:8796/rest/ping && break; sleep 1; done
+          DEVICE=$(xcrun simctl list devices available | grep -E "iPhone 1[5-7]( Pro)? \(" | head -1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')
+          echo "Simulator: $DEVICE"
+          mkdir -p "$PWD/shots"
+          TEST_RUNNER_SHOT_DIR="$PWD/shots" TEST_RUNNER_UITEST_SERVER="http://127.0.0.1:8796" \
+          xcodebuild test -project ios/Needle.xcodeproj -scheme Needle -configuration Debug -only-testing:NeedleUITests \
+            -destination "id=$DEVICE" -derivedDataPath uibuild CODE_SIGNING_ALLOWED=NO > ui.log 2>&1
+          status=$?
+          summary=$(grep -E "Executed [0-9]+ tests?" ui.log | tail -1 | sed 's/^[[:space:]]*//')
+          echo "::notice title=UI tests::${summary:-no summary (see errors)} · $(ls shots | wc -l | tr -d ' ') screenshots"
+          grep -E "error:|Test Case .* failed|XCTAssert" ui.log | sed "s#$GITHUB_WORKSPACE/##" | sort -u | head -40 > uifail.txt
+          if [ -s uifail.txt ]; then
+            split -l 10 uifail.txt upart_
+            for f in upart_*; do msg=$(sed 's/%/%25/g' "$f" | awk '{printf "%s%%0A", $0}'); echo "::error title=UI test failures $f::$msg"; done
+          fi
+          # publish the screenshots (latest run only) so they can be looked at
+          if [ -n "$(ls shots)" ]; then
+            cd shots
+            git init -q && git checkout -q -b ci-screenshots
+            git -c user.name=ci -c user.email=ci@users.noreply.github.com add -A
+            git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "Screenshots for ${GITHUB_SHA::7} (status $status)"
+            git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" ci-screenshots
+            cd ..
           fi
           exit $status
 

@@ -44,6 +44,7 @@ struct LibraryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                ScrollTopAnchor()
                 ScreenTitle(text: "Library").padding(.bottom, 16)
                 if settings.config.isComplete {
                     row("Albums", "square.stack", .albums)
@@ -117,6 +118,7 @@ struct AlbumsGridView: View {
                 ForEach(albums) { album in
                     NavigationLink(value: album) { AlbumCard(album: album, size: 160) }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("album-tile")
                         .onAppear { if album.id == albums.last?.id { Task { await more() } } }
                 }
             }

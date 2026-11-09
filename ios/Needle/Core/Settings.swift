@@ -57,7 +57,13 @@ final class AppSettings {
     }
 
     init() {
-        config = Keychain.load(ServerConfig.self, key: "server-config") ?? ServerConfig()
+        let env = ProcessInfo.processInfo.environment
+        if let server = env["UITEST_SERVER"] {
+            // automated UI tests: talk to the pretend server they started
+            config = ServerConfig(url: server, username: env["UITEST_USER"] ?? "mason", password: env["UITEST_PASS"] ?? "pw")
+        } else {
+            config = Keychain.load(ServerConfig.self, key: "server-config") ?? ServerConfig()
+        }
         quality = StreamQuality(rawValue: UserDefaults.standard.string(forKey: "quality") ?? "") ?? .original
         let limit = UserDefaults.standard.double(forKey: "cacheLimitGB")
         cacheLimitGB = limit > 0 ? limit : 2
