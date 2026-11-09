@@ -42,7 +42,7 @@ final class LookUITests: PlatterUITestCase {
         let link = app.buttons["settings-appearance"].firstMatch
         if !link.waitForExistence(timeout: 5) { app.swipeUp() }
         waitFor(link).tap()
-        waitFor(app.otherElements["look-preview"])
+        waitFor(app.buttons["look-chrome"].firstMatch)
         shot("editor-1-top")
         // pick another look, then change single settings
         app.buttons["look-neon"].firstMatch.tap()

@@ -112,7 +112,7 @@ struct IridescentBackdrop: View {
     var body: some View {
         GeometryReader { g in
             AngularGradient(colors: [.pink, .purple, .blue, .cyan, .mint, .yellow, .orange, .pink], center: .topTrailing)
-                .opacity(0.16)
+                .opacity(0.3)
                 .blur(radius: 40)
                 .frame(width: g.size.width, height: g.size.height)
         }

@@ -12,6 +12,7 @@ struct AppearanceView: View {
             VStack(alignment: .leading, spacing: 26) {
                 LookPreview()
                     .padding(.horizontal, 20)
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("look-preview")
 
                 group("Looks") {

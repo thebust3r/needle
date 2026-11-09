@@ -198,6 +198,7 @@ struct TabBarShell: ViewModifier {
                 .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
                 .padding(.horizontal, 28)
                 .padding(.bottom, 4)
+                .background(fade)
         case .dock:
             content
                 .padding(.horizontal, 8)
@@ -207,7 +208,16 @@ struct TabBarShell: ViewModifier {
                 .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 2)
+                .background(fade)
         }
+    }
+
+    /// Fades the screen out under the bar so what scrolls behind it doesn't clash.
+    private var fade: some View {
+        LinearGradient(colors: [Theme.background.opacity(0), Theme.background.opacity(0.85), Theme.background],
+                       startPoint: .top, endPoint: .bottom)
+            .padding(.top, -30)
+            .ignoresSafeArea(edges: .bottom)
     }
 }
 

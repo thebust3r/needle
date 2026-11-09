@@ -80,8 +80,10 @@ struct SettingsView: View {
                 } label: {
                     HStack(spacing: 12) {
                         Label("Appearance", systemImage: "paintbrush.pointed")
-                        Spacer()
-                        Text(Look.shared.style.name).foregroundStyle(Theme.secondary)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                        Spacer(minLength: 8)
+                        Text(Look.shared.style.name).foregroundStyle(Theme.secondary).lineLimit(1).truncationMode(.tail)
                         Circle().fill(Theme.accent).frame(width: 14, height: 14)
                     }
                 }
