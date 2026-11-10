@@ -278,6 +278,10 @@ class H(BaseHTTPRequestHandler):
             for k, v in MB.items():
                 if k in query: return self.j(v)
             return self.j({"recordings": []})
+        if p == "/_slsk" and method == "POST":      # tests: someone starts sharing a song
+            data = json.loads(body or b"{}")
+            SLSK_FILES[data["query"]] = data["responses"]
+            return self.j({"ok": True})
         if p == "/_state":
             with LOCK:
                 return self.j({"playlists": playlists, "slsk": slsk_log, "lidarr": lidarr_log, "songs": len(songs)})

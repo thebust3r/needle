@@ -1,0 +1,36 @@
+name: Download helper tests
+
+on:
+  push:
+    paths:
+      - "web/site/helper/**"
+      - "web/tests/test_helper.py"
+      - "web/tests/fake_*.py"
+      - ".github/workflows/helper.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: helper-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tools the helper uses (ffmpeg, mutagen for tags)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+          pip install --quiet mutagen
+      - name: Run the helper tests
+        run: |
+          cd web/tests
+          python -u test_helper.py | tee helper-test.log
+          summary=$(grep -E "passed, [0-9]+ failed" helper-test.log | tail -1)
+          echo "::notice title=Helper tests::$summary"
+          grep "FAIL" helper-test.log | head -20 | while read -r l; do echo "::error title=Helper test failed::$l"; done
+          grep -q ", 0 failed" helper-test.log

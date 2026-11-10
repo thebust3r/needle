@@ -9,7 +9,10 @@ import difflib
 import hashlib
 import html
 import io
+import base64
 import json, traceback
+import shlex
+import subprocess
 import os
 import re
 import shutil
@@ -23,7 +26,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "1.6"
+VERSION = "1.7"
 E = os.environ.get
 NAVIDROME = E("NAVIDROME_URL", "http://192.168.1.168:4533").rstrip("/")
 SLSKD = E("SLSKD_URL", "").rstrip("/")
@@ -507,13 +510,14 @@ def load_jobs():
 
 def public(job):
     j = {k: v for k, v in job.items() if k != "creds"}
-    j["tracks"] = [{k: v for k, v in t.items() if not k.startswith("_")} for t in job.get("tracks", [])]
+    shown = [t for t in job.get("tracks", []) if not t.get("hidden") and t.get("status") != "skipped"]
+    j["tracks"] = [{k: v for k, v in t.items() if not k.startswith("_")} for t in shown]
     c = {}
-    for t in job.get("tracks", []):
+    for t in shown:
         c[t["status"]] = c.get(t["status"], 0) + 1
     j["counts"] = c
     j["found"] = c.get("found", 0)
-    j["active"] = any(t["status"] in ACTIVE for t in job.get("tracks", []))
+    j["active"] = any(t["status"] in ACTIVE for t in shown)
     return j
 
 
@@ -525,7 +529,7 @@ def rebuild_playlist(job):
     if job.get("kind") == "downloads":
         return
     nav = Navidrome(job["creds"])
-    ids = [t["songId"] for t in job["tracks"] if t.get("songId")]
+    ids = [t["songId"] for t in job["tracks"] if t.get("songId") and not t.get("hidden") and t.get("status") != "skipped"]
     job["playlistId"] = nav.save_playlist(job.get("playlistId"), job["name"], ids)
 
 
@@ -811,9 +815,9 @@ def step_song(job, t, now):
             return
         if not picks:
             if t.get("_tried"):
-                t.update(status="failed", note="Everyone who had it failed or was too slow. Try again later.")
+                to_youtube(t, now, "Everyone on Soulseek who had it failed or was too slow.")
             else:
-                t.update(status="failed", note="No one on Soulseek is sharing it right now (or Soulseek blocks this artist's name)")
+                to_youtube(t, now, "No one on Soulseek is sharing it right now (or Soulseek blocks this artist's name).")
             return
         t["_picks"] = picks
         t["_try"] = -1
@@ -863,7 +867,10 @@ def step_song(job, t, now):
     elif st == "importing":
         s = find_in_library(Navidrome(job["creds"]), t)
         if s:
-            t.update(status="found", songId=s["id"], match=f'{s.get("artist", "")} - {s.get("title", "")}', note="Downloaded")
+            t.update(status="found", songId=s["id"], match=f'{s.get("artist", "")} - {s.get("title", "")}',
+                     note="Downloaded from YouTube" if t.get("source") == "youtube" else "Downloaded")
+            if t.get("_upgrade"):
+                finish_upgrade(job, t)
             rebuild_playlist(job)
             return
         if now - t["_since"] > (6 if FAST else 3600):
@@ -884,7 +891,7 @@ def next_pick(t, now, why=None):
             t.update(status="queued", _round=t.get("_round", 0) + 1, _qi=0, _picks=[], note="Looking for someone else who has it")
             t["_next"] = now + (0.2 if FAST else 30)
             return
-        t.update(status="failed", note=f"{why}, and no one else had it. Try again later." if why else "No one had a copy that worked. Try again later.")
+        to_youtube(t, now, f"{why}, and no one else on Soulseek had it." if why else "No one on Soulseek had a copy that worked.")
         return
     p = picks[t["_try"]]
     slskd(f"transfers/downloads/{quote(p['user'])}", "POST", [{"filename": p["filename"], "size": p["size"]}])
@@ -893,6 +900,355 @@ def next_pick(t, now, why=None):
     t["_next"] = now + (0.5 if FAST else 4)
 
 
+
+
+# ------------------------------------------------------------------ YouTube (when Soulseek doesn't have it)
+# Only used when no one on Soulseek has a song. Takes the official upload ("Artist - Topic") when there is one,
+# the best audio stream YouTube has (Opus, about 160 kbps), kept as-is with no re-encoding, tagged with the
+# right title/artist/album/cover. Songs that came from YouTube get re-checked on Soulseek every few days and
+# replaced when a lossless or 320 copy shows up.
+
+YT_ON = E("YOUTUBE", "on").lower() not in ("off", "0", "no", "false")
+YT_CMD = E("YTDLP_CMD", "")                       # tests use a stand-in here
+PYLIB = os.path.join(DATA_DIR, "pylib")             # where yt-dlp and mutagen get installed
+YT = {"state": "off" if not YT_ON else "installing", "note": ""}
+PROCS = {}                                          # running yt-dlp processes, by job:track
+YT_BAD = ["cover", "karaoke", "nightcore", "8d", "sped up", "slowed", "reverb", "bass boosted", "reaction",
+          "tutorial", "instrumental", "live", "remix", "1 hour", "loop", "chopped", "screwed", "fan made", "lyrics video edit"]
+UPGRADE_EVERY = 3 * 86400                           # look for a better copy every few days
+
+
+def ensure_youtube():
+    """Installs yt-dlp (+ ffmpeg, node, mutagen) inside the helper the first time, and keeps yt-dlp up to date."""
+    if not YT_ON:
+        YT.update(state="off", note="Turned off (YOUTUBE=off)")
+        return
+    if YT_CMD:
+        YT.update(state="ready", note="")
+        return
+    try:
+        YT.update(state="installing", note="Setting up YouTube downloads (first time only, a minute or two)")
+        if (not shutil.which("ffmpeg") or not shutil.which("node")) and shutil.which("apk"):
+            subprocess.run(["apk", "add", "--no-cache", "ffmpeg", "nodejs"], check=True, capture_output=True, timeout=900)
+        marker = os.path.join(PYLIB, ".installed")
+        fresh = os.path.exists(marker) and time.time() - os.path.getmtime(marker) < 5 * 86400
+        if not fresh:
+            # YouTube changes often: a current yt-dlp is what keeps this working
+            subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--upgrade",
+                            "--target", PYLIB, "yt-dlp[default]", "mutagen"], check=True, capture_output=True, timeout=1200)
+            open(marker, "w").close()
+        YT.update(state="ready", note="")
+        log("YouTube downloads ready")
+    except Exception as e:
+        err = getattr(e, "stderr", b"") or b""
+        YT.update(state="failed", note=f"Couldn't set up YouTube downloads: {(err.decode('utf-8', 'replace') if isinstance(err, bytes) else str(err))[-300:] or e}")
+        log("YouTube setup failed:", YT["note"])
+
+
+def youtube_keeper():
+    while True:
+        ensure_youtube()
+        time.sleep(86400)          # once a day: refresh yt-dlp when it's gone stale
+
+
+def yt_base():
+    if YT_CMD:
+        return shlex.split(YT_CMD)
+    return [sys.executable, "-m", "yt_dlp", "--no-warnings", "--js-runtimes", "node", "--ignore-config"]
+
+
+def yt_env():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = PYLIB + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return env
+
+
+def youtube_usable():
+    return YT["state"] in ("ready", "installing")
+
+
+def pick_youtube(t, entries):
+    """The best upload for this song: right title and length, no remixes/covers, official audio first."""
+    want = title_words(t["title"])
+    wanted_variants = variant_words(t["title"])
+    want_n = " " + norm(t["title"]) + " "
+    arts = set()
+    for a in t.get("artists") or []:
+        arts |= artist_names(a)
+    best, best_s = None, -99.0
+    for e in entries:
+        title = str(e.get("title") or "")
+        channel = str(e.get("channel") or e.get("uploader") or "")
+        text = " " + norm(title + " " + channel) + " "
+        if not e.get("id"):
+            continue
+        if words_match(want, set(text.split())) > (1 if len(want) >= 4 else 0):
+            continue
+        bad = [w for w in YT_BAD if f" {norm(w)} " in " " + norm(title) + " " and f" {norm(w)} " not in want_n]
+        if bad or (variant_words(title) - wanted_variants):
+            continue
+        dur = e.get("duration")
+        off = abs(float(dur) - t["duration"]) if dur and t.get("duration") else None
+        if off is not None and off > max(8, t["duration"] * 0.06):
+            continue
+        has_artist = any(f" {a} " in text for a in arts) if arts else True
+        topic = channel.lower().endswith(" - topic")
+        if not has_artist and not (off is not None and off <= 2):
+            continue
+        score = 0.0
+        score += 4 if topic else 0                       # the label's own upload: the real studio audio
+        score += 1.5 if "official audio" in title.lower() else 0
+        score -= 1.5 if re.search(r"official (music )?video|\bmv\b|visuali[sz]er", title.lower()) else 0
+        score += 2 - min(2, (off or 4) / 2) if off is not None else 0
+        score += 1 if has_artist else 0
+        if score > best_s:
+            best, best_s = e, score
+    return best
+
+
+def yt_proc_key(job, t):
+    return f"{job['id']}:{t['i']}"
+
+
+def to_youtube(t, now, why):
+    """Soulseek came up empty: try YouTube (or fail with the reason if YouTube downloads aren't available)."""
+    if t.get("_upgrade"):
+        t.update(status="skipped", note="No better copy yet")
+        return
+    if not youtube_usable() or t.get("method") == "youtube":
+        t.update(status="failed", note=why if not youtube_usable() else f"{why} YouTube didn't have it either.")
+        return
+    for k in [k for k in t if k in ("_picks", "_try", "_search", "_since", "_tried", "_round", "_qi", "_title_only_ok", "_moving", "_got")]:
+        t.pop(k, None)
+    t.update(method="youtube", status="queued", note="Not on Soulseek, trying YouTube", progress=None, _why=why)
+    t["_next"] = now
+
+
+def step_youtube(job, t, now):
+    key = yt_proc_key(job, t)
+    st = t["status"]
+    if YT["state"] == "installing":
+        t["note"] = "Setting up YouTube downloads (first time only)…"
+        t["_next"] = now + (0.5 if FAST else 15)
+        return
+    if YT["state"] != "ready":
+        t.update(status="failed", note=YT["note"] or "YouTube downloads aren't available.")
+        return
+    if st == "queued":
+        if sum(1 for p in PROCS.values() if p.poll() is None) >= 2:
+            t["_next"] = now + (0.5 if FAST else 5)
+            return
+        q = f"{primary_artist(t)} {clean_title(t['title'])}".strip()
+        PROCS[key] = subprocess.Popen(yt_base() + ["--dump-json", "--flat-playlist", "--no-download", f"ytsearch10:{q}"],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=yt_env())
+        t.update(status="searching", note="Looking on YouTube", _since=now)
+        t["_next"] = now + (0.3 if FAST else 2)
+    elif st == "searching":
+        p = PROCS.get(key)
+        if not p:
+            t.update(status="queued"); return
+        if p.poll() is None:
+            if now - t["_since"] > (10 if FAST else 120):
+                p.kill(); PROCS.pop(key, None)
+                t.update(status="failed", note="YouTube took too long to answer. Try again later.")
+            else:
+                t["_next"] = now + (0.3 if FAST else 2)
+            return
+        out, err = p.communicate()
+        PROCS.pop(key, None)
+        entries = []
+        for line in out.splitlines():
+            if line.strip().startswith("{"):
+                try:
+                    entries.append(json.loads(line))
+                except ValueError:
+                    pass
+        if not entries and p.returncode:
+            log("yt-dlp search failed:", err[-400:])
+        pick = pick_youtube(t, entries)
+        if not pick:
+            t.update(status="failed", note=f"{t.get('_why') or 'Not on Soulseek.'} No matching upload on YouTube either.")
+            return
+        tmp = os.path.join(DATA_DIR, "yt-tmp", uuid.uuid4().hex[:10])
+        os.makedirs(tmp, exist_ok=True)
+        logf = open(os.path.join(tmp, "log.txt"), "w")
+        # best audio, kept as it is (no re-encoding): Opus ~160k, else AAC
+        PROCS[key] = subprocess.Popen(yt_base() + ["-f", "bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio", "--no-playlist", "--newline",
+                                                   "--progress", "-o", os.path.join(tmp, "%(id)s.%(ext)s"),
+                                                   f"https://www.youtube.com/watch?v={pick['id']}"],
+                                      stdout=logf, stderr=subprocess.STDOUT, text=True, env=yt_env())
+        logf.close()
+        who = str(pick.get("channel") or pick.get("uploader") or "YouTube")
+        t.update(status="downloading", progress=0, _since=now, _moving=now, _yt={"id": pick["id"], "dir": tmp, "title": pick.get("title", ""), "channel": who},
+                 note=f"Downloading from YouTube ({who})")
+        log("YouTube:", t["title"], "->", pick.get("title"), f"[{who}]")
+        t["_next"] = now + (0.3 if FAST else 2)
+    elif st == "downloading":
+        p = PROCS.get(key)
+        y = t.get("_yt") or {}
+        if not p or not y:
+            t.update(status="queued"); return
+        try:
+            tail = open(os.path.join(y["dir"], "log.txt"), errors="replace").read()[-2000:]
+        except OSError:
+            tail = ""
+        m = re.findall(r"\[download\]\s+([\d.]+)%", tail)
+        if m:
+            pct = int(float(m[-1]))
+            if pct != t.get("progress"):
+                t["progress"], t["_moving"] = pct, now
+        if p.poll() is None:
+            if now - t.get("_moving", now) > (10 if FAST else 300):
+                p.kill(); PROCS.pop(key, None)
+                t.update(status="failed", note="The YouTube download stalled. Try again later.")
+            else:
+                t["_next"] = now + (0.3 if FAST else 2)
+            return
+        PROCS.pop(key, None)
+        files = [f for f in os.listdir(y["dir"]) if f != "log.txt" and not f.endswith(".part")]
+        if p.returncode or not files:
+            errs = [l for l in tail.splitlines() if "ERROR" in l]
+            t.update(status="failed", note="YouTube download failed: " + (errs[-1][-200:] if errs else f"exit {p.returncode}"))
+            shutil.rmtree(y["dir"], ignore_errors=True)
+            return
+        src = os.path.join(y["dir"], files[0])
+        try:
+            src = keep_without_reencoding(src)
+            # name it like a normal file ("03 - Title.opus"), not after the YouTube video id
+            named = os.path.join(y["dir"], (f"{int(t['_trackno']):02d} - " if t.get("_trackno") else "")
+                                 + safe_name(clean_title_display(t["title"])) + os.path.splitext(src)[1])
+            os.rename(src, named)
+            src = named
+            tag_file(src, t)
+            rel = move_into_library(t, src)
+        except Exception as e:
+            t.update(status="failed", note=f"Downloaded from YouTube but couldn't save it: {e}")
+            shutil.rmtree(y["dir"], ignore_errors=True)
+            return
+        shutil.rmtree(y["dir"], ignore_errors=True)
+        Navidrome(job["creds"]).scan()
+        t.update(method="song", status="importing", file=rel, _since=now, progress=100, source="youtube", _ytcheck=now,
+                 note="Adding to your library (from YouTube)")
+        t["_next"] = now + (0.5 if FAST else 5)
+
+
+def keep_without_reencoding(src):
+    """WebM Opus goes into an .opus file (same audio, a container every player reads); M4A stays M4A."""
+    base, ext = os.path.splitext(src)
+    if ext.lower() == ".webm" and shutil.which("ffmpeg"):
+        out = base + ".opus"
+        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vn", "-c:a", "copy", out], capture_output=True, timeout=300)
+        if r.returncode == 0 and os.path.exists(out):
+            os.remove(src)
+            return out
+    return src
+
+
+def cover_bytes(t):
+    url = t.get("cover") or ""
+    if not url:
+        try:
+            for x in catalog_songs(f"{primary_artist(t)} {clean_title(t['title'])}", 5):
+                if x.get("cover") and title_score(t["title"], x["title"]) >= 0.86:
+                    url = x["cover"].replace("250x250", "1000x1000")
+                    break
+        except Exception:
+            url = ""
+    if not url:
+        return None
+    try:
+        with urlopen(Request(url, headers={"User-Agent": "Platter"}), timeout=15) as r:
+            return r.read(5_000_000)
+    except (HTTPError, URLError, OSError):
+        return None
+
+
+def tag_file(path, t):
+    """Title, artist, album, track number and cover, so it sits in the right album like everything else."""
+    if PYLIB not in sys.path:
+        sys.path.insert(0, PYLIB)
+    try:
+        import mutagen  # noqa: F401
+    except ImportError:
+        return
+    title = clean_title_display(t["title"])
+    artist = ", ".join(t.get("artists") or []) or "Unknown Artist"
+    album_artist = t.get("_albumartist") or primary_artist(t) or artist
+    album = album_name_for(t)
+    t.setdefault("album", album)
+    track = t.get("_trackno")
+    art = cover_bytes(t)
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".m4a", ".mp4", ".aac"):
+        from mutagen.mp4 import MP4, MP4Cover
+        f = MP4(path)
+        f["\xa9nam"], f["\xa9ART"], f["\xa9alb"], f["aART"] = [title], [artist], [album], [album_artist]
+        if track:
+            f["trkn"] = [(int(track), 0)]
+        if art:
+            f["covr"] = [MP4Cover(art, imageformat=MP4Cover.FORMAT_PNG if art[:4] == b"\x89PNG" else MP4Cover.FORMAT_JPEG)]
+        f.save()
+    elif ext in (".opus", ".ogg"):
+        from mutagen.oggopus import OggOpus
+        from mutagen.flac import Picture
+        f = OggOpus(path)
+        f["title"], f["artist"], f["album"], f["albumartist"] = [title], [artist], [album], [album_artist]
+        if track:
+            f["tracknumber"] = [str(track)]
+        if art:
+            pic = Picture()
+            pic.type, pic.mime, pic.data = 3, "image/png" if art[:4] == b"\x89PNG" else "image/jpeg", art
+            f["metadata_block_picture"] = [base64.b64encode(pic.write()).decode("ascii")]
+        f.save()
+
+
+def clean_title_display(s):
+    """The title as people write it, minus streaming add-ons like ' - Remastered 2011'."""
+    s = str(s or "")
+    s = re.sub(r"\s+-\s+(\d{4}\s+)?remaster(ed)?.*$", "", s, flags=re.I)
+    return s.strip() or str(s)
+
+
+def upgrade_check(now):
+    """Every few days, look on Soulseek again for songs that came from YouTube; replace them with a better copy."""
+    with LOCK:
+        jobs = list(JOBS.values())
+        for j in jobs:      # finished checks leave nothing behind
+            j["tracks"] = [x for x in j["tracks"] if not (x.get("hidden") and x["status"] not in ACTIVE)]
+    running = sum(1 for j in jobs for x in j["tracks"] if x.get("_upgrade") and x["status"] in ACTIVE)
+    for job in jobs:
+        for t in list(job["tracks"]):
+            if running >= 2:
+                return
+            if t.get("source") != "youtube" or t.get("status") != "found" or not t.get("file"):
+                continue
+            if now - t.get("_ytcheck", 0) < (2 if FAST else UPGRADE_EVERY):
+                continue
+            t["_ytcheck"] = now
+            with LOCK:
+                nxt = max([x["i"] for x in job["tracks"]] + [-1]) + 1
+                job["tracks"].append({"i": nxt, "title": t["title"], "artists": t.get("artists") or [], "duration": t.get("duration", 0),
+                                      "album": t.get("album", ""), "cover": t.get("cover", ""), "method": "song", "status": "queued",
+                                      "_next": now, "_upgrade": {"i": t["i"], "file": t["file"]}, "note": "Looking for a better copy",
+                                      "added": now, "hidden": True})
+            running += 1
+
+
+def finish_upgrade(job, t):
+    """The better copy is in: remove the YouTube one and point the original entry at the new file."""
+    up = t.get("_upgrade") or {}
+    old = os.path.join(MUSIC_DIR, up.get("file", ""))
+    if up.get("file") and os.path.abspath(old).startswith(os.path.abspath(os.path.join(MUSIC_DIR, SONGS_FOLDER)) + os.sep) and os.path.isfile(old):
+        try:
+            os.remove(old)
+            log("upgraded from YouTube:", t["title"], "->", t.get("file"))
+        except OSError:
+            pass
+    for x in job["tracks"]:
+        if x["i"] == up.get("i"):
+            x.update(source="soulseek", file=t.get("file"), songId=t.get("songId"), note="Upgraded to a better copy")
+    t.update(status="skipped")
+    Navidrome(job["creds"]).scan()
 
 # ------------------------------------------------------------------ whole albums from Soulseek (one person's folder)
 # A whole album comes from ONE person's folder, so every song is the same copy with the same tags
@@ -1165,11 +1521,18 @@ def album_import(job, t, now, p):
 
 
 def album_failed(job, t, now, why):
+    alb = t.get("_alb") or {}
     for x in album_members(job, t):
         if x["status"] in ACTIVE or x is t:
-            x.update(status="failed", note=why, method="song")
             for k in ("_leader", "_alb"):
                 x.pop(k, None)
+            if youtube_usable():
+                # song by song from YouTube, all tagged with the same album so it still shows up as one album
+                x.update(method="youtube", status="queued", note=f"{why} Getting it from YouTube instead.", _why=why,
+                         album=alb.get("title") or x.get("album", ""), _albumartist=alb.get("artist") or "")
+                x["_next"] = now
+            else:
+                x.update(status="failed", note=why, method="song")
 
 
 def step_follow(job, t, now):
@@ -1292,10 +1655,16 @@ def worker():
             log("worker error:", repr(e), traceback.format_exc()[-800:])
 
 
+LAST_UPGRADE_CHECK = [0.0]
+
+
 def work_once():
     if True:
         now = time.time()
         changed = False
+        if YT["state"] == "ready" and now - LAST_UPGRADE_CHECK[0] > (1 if FAST else 3600):
+            LAST_UPGRADE_CHECK[0] = now
+            upgrade_check(now)
         with LOCK:
             # songs you picked in Search go first, then playlist imports (oldest first)
             jobs = sorted(JOBS.values(), key=lambda j: (j.get("kind") != "downloads", j.get("created", 0)))
@@ -1306,7 +1675,7 @@ def work_once():
                 before = (t["status"], t.get("note"), t.get("progress"))
                 try:
                     m = t.get("method")
-                    {"song": step_song, "salbum": step_salbum, "follow": step_follow}.get(m, step_album)(job, t, now)
+                    {"song": step_song, "salbum": step_salbum, "follow": step_follow, "youtube": step_youtube}.get(m, step_album)(job, t, now)
                 except Exception as e:
                     what = "Lidarr" if t.get("method") == "album" else "slskd"
                     code = e.code if isinstance(e, HTTPError) else 0
@@ -1675,6 +2044,9 @@ def queue_downloads(creds, items, album=None):
             busy.add(key)
             nxt += 1
             have = owned.get(k)
+            if salb:
+                t["_trackno"] = k + 1
+                t["_albumartist"] = salb["artist"]
             if salb and have and not our_download(title, arts):
                 # your own copy (not something Platter downloaded): keep it, don't download it again
                 salb.setdefault("skip", []).append(title)
@@ -1754,7 +2126,8 @@ class Handler(BaseHTTPRequestHandler):
         if not creds:
             return self.send(401, {"error": "Sign in with your Navidrome account."})
         if path == "/status" and method == "GET":
-            return self.send(200, {"ok": True, "version": VERSION, "soulseek": bool(SLSKD and SLSKD_KEY), "lidarr": bool(LIDARR and LIDARR_KEY), "find": True})
+            return self.send(200, {"ok": True, "version": VERSION, "soulseek": bool(SLSKD and SLSKD_KEY), "lidarr": bool(LIDARR and LIDARR_KEY), "find": True,
+                                   "youtube": YT["state"], "youtubeNote": YT["note"]})
         if path == "/jobs" and method == "GET":
             with LOCK:
                 mine = [public(j) for j in JOBS.values() if j["creds"]["u"] == creds["u"] and j.get("kind") != "downloads"]
@@ -1921,10 +2294,16 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     load_jobs()
+    for j in JOBS.values():       # YouTube downloads that were running when the helper stopped start over
+        for t in j.get("tracks", []):
+            if t.get("method") == "youtube" and t.get("status") in ("searching", "downloading"):
+                t["status"] = "queued"
+    threading.Thread(target=youtube_keeper, daemon=True).start()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=watch_self, daemon=True).start()
     log(f"Needle helper {VERSION} on port {PORT}. Navidrome: {NAVIDROME}. "
-        f"Soulseek: {'on' if SLSKD and SLSKD_KEY else 'off'}. Lidarr: {'on' if LIDARR and LIDARR_KEY else 'off'}.")
+        f"Soulseek: {'on' if SLSKD and SLSKD_KEY else 'off'}. Lidarr: {'on' if LIDARR and LIDARR_KEY else 'off'}. "
+        f"YouTube backup: {'on' if YT_ON else 'off'}.")
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 

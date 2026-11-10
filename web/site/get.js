@@ -112,7 +112,7 @@ const getMusic = (() => {
   }
 
   const label = (t) => ({
-    found: t.note === "Already in your library" ? "Already had it" : "Added",
+    found: t.note === "Already in your library" ? "Already had it" : t.source === "youtube" ? "Added · YouTube" : "Added",
     queued: "Waiting…", searching: "Searching…",
     downloading: t.note && t.note.startsWith("Waiting") ? "In their queue" : `Downloading ${t.progress || 0}%`,
     importing: "Adding to library…", requesting: "Asking Lidarr…", album: "Getting album…", failed: "Didn't work",

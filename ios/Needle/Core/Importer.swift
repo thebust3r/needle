@@ -96,6 +96,8 @@ struct ImportTrack: Decodable, Identifiable, Equatable {
     var progress: Int?
     var cover: String?
     var songId: String?
+    /// "youtube" when Soulseek didn't have it (it gets upgraded later if a better copy turns up).
+    var source: String?
     var id: Int { i }
 
     var isActive: Bool { Self.activeStates.contains(status) }

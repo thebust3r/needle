@@ -72,7 +72,8 @@ fake = subprocess.Popen([sys.executable, os.path.join(HERE, "fake_services.py"),
 base = f"http://127.0.0.1:{FP}"
 env = dict(os.environ, NAVIDROME_URL=base, SPOTIFY_URL=base, MUSICBRAINZ_URL=base, DEEZER_URL=base + "/deezer", SLSKD_URL=base + "/slskd", SLSKD_API_KEY="slsk-key",
            LIDARR_URL=base + "/lidarr", LIDARR_API_KEY="lid-key", MUSIC_DIR=music, DOWNLOADS_DIR=downloads, DATA_DIR=data,
-           PORT=str(HP), NEEDLE_FAST="1")
+           PORT=str(HP), NEEDLE_FAST="1", YTDLP_CMD=f"{sys.executable} {os.path.join(HERE, 'fake_ytdlp.py')}",
+           FAKE_YT_LOG=os.path.join(tmp, "yt.log"))
 run_dir = os.path.join(tmp, "app"); os.makedirs(run_dir)
 helper_copy = os.path.join(run_dir, "helper.py"); shutil.copy(HELPER, helper_copy)
 def start_helper():
@@ -139,15 +140,46 @@ try:
     check("Midnight City downloaded and added", by["Midnight City"]["status"] == "found", by["Midnight City"])
     check("picked the fast FLAC, not the remix", "Hurry Up We're Dreaming" not in by["Midnight City"].get("file", "x") and by["Midnight City"].get("file", "").endswith("04 - Midnight City.flac"), by["Midnight City"])
     check("Weird Fishes fell back to the second user", by["Weird Fishes"]["status"] == "found", by["Weird Fishes"])
-    check("remix-only song reported, not grabbed", by["Obscure Song"]["status"] == "failed" and "Soulseek" in by["Obscure Song"]["note"], by["Obscure Song"])
+    ob = by["Obscure Song"]
+    check("not on Soulseek (only a remix there): got it from YouTube instead", ob["status"] == "found" and ob.get("source") == "youtube", ob)
+    ytlog = [json.loads(l) for l in open(os.path.join(tmp, "yt.log"))]
+    check("searched YouTube for it", any("ytsearch10:nobody known obscure song" in a.lower() for x in ytlog for a in x), ytlog[:2])
+    check("took the official 'Topic' upload, not the cover, video or slowed one", any("https://www.youtube.com/watch?v=top1" in a for a in ytlog), ytlog)
+    check("asked for the best audio stream, without re-encoding", any("bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio" in a for a in ytlog))
+    ob_file = os.path.join(music, ob.get("file", "x"))
+    check("saved as a normal file name in the artist's folder", ob.get("file", "").startswith("Needle Downloads/Nobody Known/") and ob["file"].endswith("Obscure Song.opus")
+          and os.path.exists(ob_file), ob.get("file"))
+    check("kept the Opus audio as-is (no conversion)", open(ob_file, "rb").read(4) == b"OggS")
+    try:
+        from mutagen.oggopus import OggOpus
+    except ImportError:
+        print("  (mutagen isn't installed here: tags checked in CI)")
+    else:
+        tags = OggOpus(ob_file)
+        check("tagged with title, artist and album", tags.get("title") == ["Obscure Song"] and tags.get("artist") == ["Nobody Known"]
+              and tags.get("album") and tags.get("albumartist") == ["Nobody Known"], dict(tags))
     check("files moved into Music/Needle Downloads/<artist>/<album>", os.path.exists(os.path.join(music, "Needle Downloads", "M83", "Hurry Up, We're Dreaming", "04 - Midnight City.flac"))
           and os.path.exists(os.path.join(music, "Needle Downloads", "Radiohead", "Singles", "04 - Weird Fishes_Arpeggi.mp3")))
     check("downloads folder cleaned up", not any(f for _, _, fs in os.walk(downloads) for f in fs))
     pl = state()["playlists"][j["playlistId"]]
     order = [t["songId"] for t in j["tracks"] if t.get("songId")]
-    check("new songs slotted into the right spots", pl["songs"] == order and len(order) == 10, (pl["songs"], order))
+    check("new songs slotted into the right spots", pl["songs"] == order and len(order) == 11, (pl["songs"], order))
     pos = [t["title"] for t in j["tracks"] if t.get("songId")]
     check("order kept around them", pos.index("Midnight City") == pos.index("Ultralight Beam") + 1)
+
+    print("YouTube copies get upgraded when a better one shows up on Soulseek")
+    req = Request(base + "/_slsk", data=json.dumps({"query": "nobody known obscure song", "responses": [
+        {"username": "rare", "hasFreeUploadSlot": True, "uploadSpeed": 3000000, "queueLength": 0,
+         "files": [{"filename": "@@r\\Nobody Known\\Deep Cuts\\07 Obscure Song.flac", "size": 4000, "length": 180}]}]}).encode(),
+                  method="POST", headers={"Content-Type": "application/json"})
+    urlopen(req).read()
+    j = wait_job(jid, lambda j: [t for t in j["tracks"] if t["title"] == "Obscure Song"][0].get("source") == "soulseek", 60)
+    ob2 = [t for t in j["tracks"] if t["title"] == "Obscure Song"][0]
+    check("replaced with the Soulseek FLAC", ob2.get("source") == "soulseek" and ob2.get("file", "").endswith(".flac") and "Upgraded" in ob2.get("note", ""), ob2)
+    check("the YouTube file is gone", not os.path.exists(ob_file))
+    check("still one Obscure Song in the list (the upgrade isn't shown twice)", sum(1 for t in j["tracks"] if t["title"] == "Obscure Song") == 1)
+    pl = state()["playlists"][j["playlistId"]]
+    check("playlist points at the better copy, once", pl["songs"].count(ob2["songId"]) == 1 and len(pl["songs"]) == 11, pl["songs"])
     sl = state()["slsk"]
     check("searched with artist + title", "m83 midnight city" in sl, sl)
     check("retried the remix-only song by title", "obscure song" in sl, sl)
@@ -260,7 +292,7 @@ try:
     proc.send_signal(signal.SIGTERM); proc.wait(5)
     proc = start_helper(); time.sleep(1.0)
     code, j = call(f"/jobs/{jid}")
-    check("imports survive a restart", code == 200 and j["found"] == 10, (code, j.get("found")))
+    check("imports survive a restart", code == 200 and j["found"] == 11, (code, j.get("found")))
     time.sleep(1.2)
     os.utime(helper_copy, (time.time() + 5, time.time() + 5))
     try: rc = proc.wait(15)

@@ -292,7 +292,7 @@ struct DownloadQueueView: View {
 
     private func label(_ t: ImportTrack) -> String {
         switch t.status {
-        case "found": return t.note == "Already in your library" ? "Had it" : "Added"
+        case "found": return t.note == "Already in your library" ? "Had it" : t.source == "youtube" ? "Added · YouTube" : "Added"
         case "failed": return "Didn't work"
         case "importing": return "Adding…"
         default: return t.label
